@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Setlist</title>
+  <meta name="description" content="A private diary of the concerts you've been to.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14111f">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Setlist">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/shows" class="brand"><img src="icons/icon-192.png" alt="" width="28" height="28"> Setlist</a>
+  </header>
+
+  <main id="app" tabindex="-1"></main>
+
+  <nav class="tabbar" aria-label="Main">
+    <a href="#/shows" data-tab="shows"><span class="ti" aria-hidden="true">♪</span>My Shows</a>
+    <a href="#/add" data-tab="add" class="addtab"><span class="ti" aria-hidden="true">＋</span>Add Show</a>
+    <a href="#/stats" data-tab="stats"><span class="ti" aria-hidden="true">▤</span>Stats</a>
+  </nav>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+    }
+  </script>
+</body>
+</html>
