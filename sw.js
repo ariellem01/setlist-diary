@@ -1,9 +1,10 @@
 // Setlist service worker.
 // Its job: (1) lets Android/Chrome offer "Install app", and
 // (2) keeps a copy of the app's files on the phone so it still opens with no signal.
+// IMPORTANT: bump the CACHE name below every time you republish, so phones pick up the new version.
 // It never sends your diary anywhere — it only stores the app's own files.
 
-const CACHE = "setlist-v1"; // change this name (v2, v3…) each time you republish
+const CACHE = "setlist-v2"; // change this name (v2, v3…) each time you republish
 
 // Files saved on first visit. Missing ones are skipped, so this is safe to keep as-is.
 const CORE = ["./", "./index.html", "./app.js", "./style.css", "./manifest.json",

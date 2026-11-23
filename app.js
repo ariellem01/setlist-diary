@@ -130,12 +130,15 @@ function setTab(name) {
 }
 async function route() {
   releaseUrls();
+  app.onclick = null;
   const h = location.hash || '#/shows';
   window.scrollTo(0, 0);
   try {
     if (h.startsWith('#share=')) { setTab(''); return await viewShared(h.slice(7)); }
     const [, view, id] = h.split('/');
     if (view === 'add') { setTab('add'); return await viewForm(null); }
+    if (view === 'plan') { setTab(id ? '' : 'add'); return await viewPlanForm(id || null); }
+    if (view === 'upcoming') { setTab('upcoming'); return await viewUpcoming(); }
     if (view === 'edit' && id) { setTab(''); return await viewForm(id); }
     if (view === 'show' && id) { setTab('shows'); return await viewShow(id); }
     if (view === 'stats') { setTab('stats'); return await viewStats(); }
@@ -149,8 +152,12 @@ async function route() {
 window.addEventListener('hashchange', route);
 
 // ===================== My Shows =====================
+// Diary entries are shows you went to. Future concerts are stored alongside them with kind: 'plan'.
+const isPlan = (s) => s.kind === 'plan';
+async function attendedShows() { return (await dbAll('shows')).filter((s) => !isPlan(s)); }
+
 async function viewList() {
-  const shows = (await dbAll('shows')).sort((a, b) =>
+  const shows = (await attendedShows()).sort((a, b) =>
     (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || ''));
   if (!shows.length) {
     app.innerHTML = `<div class="empty">
@@ -197,6 +204,7 @@ async function viewList() {
 async function viewShow(id) {
   const s = await dbGet('shows', id);
   if (!s) { location.hash = '#/shows'; return; }
+  if (isPlan(s)) { setTab('upcoming'); return viewPlan(s); }
   const media = (await Promise.all((s.media || []).map((m) => dbGet('media', m)))).filter(Boolean);
   const t = s.ticket || {};
   const ticketFile = t.fileId ? await dbGet('media', t.fileId) : null;
@@ -414,8 +422,9 @@ async function viewForm(id) {
   let rating = Number(s.rating) || 0;
 
   app.innerHTML = `
-    <a class="back" href="${existing ? '#/show/' + existing.id : '#/shows'}">‹ ${existing ? 'Back' : 'Cancel'}</a>
-    <h1>${existing ? 'Edit show' : 'Add a show'}</h1>
+    ${existing ? `<a class="back" href="#/show/${existing.id}">‹ Back</a><h1>Edit show</h1>` : `
+    <h1>Add a show</h1>
+    <div class="seg" role="tablist"><a class="on" href="#/add" aria-current="page">A show I went to</a><a href="#/plan">A show I want to see</a></div>`}
     <form novalidate>
       <label class="field"><span>Artist <b class="req">*</b></span>
         <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(s.artist)}" placeholder="Who did you see?"></label>
@@ -552,9 +561,215 @@ async function viewForm(id) {
   };
 }
 
+// ===================== Upcoming (concerts you want to see) =====================
+function daysUntil(iso) {
+  if (!iso) return null;
+  const t = new Date(); t.setHours(12, 0, 0, 0);
+  return Math.round((parseDate(iso) - t) / 86400000);
+}
+function countdownText(iso) {
+  const n = daysUntil(iso);
+  if (n === null) return 'Date not announced';
+  if (n < 0) return n === -1 ? 'Was yesterday' : `Was ${-n} days ago`;
+  if (n === 0) return 'Today!';
+  if (n === 1) return 'Tomorrow';
+  if (n < 60) return `In ${n} days`;
+  const m = Math.round(n / 30.4);
+  return `In about ${m} months`;
+}
+function statusPill(p) {
+  return p.status === 'got' ? '<span class="pill got">🎟 Got tickets</span>' : '<span class="pill want">☆ Want to go</span>';
+}
+function safeLink(url) {
+  try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch (e) { return ''; }
+}
+function fmtDateTime(dt) {
+  if (!dt) return '';
+  const d = new Date(dt);
+  return isNaN(d) ? '' : d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+async function viewUpcoming() {
+  const plans = (await dbAll('shows')).filter(isPlan);
+  const past = plans.filter((p) => p.date && daysUntil(p.date) < 0).sort((a, b) => a.date.localeCompare(b.date));
+  const ahead = plans.filter((p) => !p.date || daysUntil(p.date) >= 0)
+    .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '').localeCompare(b.time || ''));
+
+  if (!plans.length) {
+    app.innerHTML = `<div class="empty">
+      <div class="big">🗓</div>
+      <h1>No upcoming concerts</h1>
+      <p class="muted">Keep a list of shows you'd like to see, with a countdown, when tickets go on sale, and your budget.</p>
+      <a class="btn primary block" href="#/plan">＋ Add a concert you want to see</a>
+    </div>`;
+    return;
+  }
+  const card = (p) => {
+    const d = parseDate(p.date);
+    return `<li><a class="card plan" href="#/show/${p.id}">
+      <div class="datebox">${d ? `<div class="m">${d.toLocaleDateString(undefined, { month: 'short' })}</div>
+        <div class="d">${d.getDate()}</div><div class="y">${d.getFullYear()}</div>` : '<div class="d">?</div><div class="y">TBA</div>'}</div>
+      <div><div class="t">${esc(p.artist)}</div>
+        <div class="s">${esc([p.venue, p.city].filter(Boolean).join(' · ')) || '&nbsp;'}</div>
+        <div>${statusPill(p)} <span class="countdown">${countdownText(p.date)}</span></div></div>
+    </a></li>`;
+  };
+  app.innerHTML = `
+    <h1>Upcoming</h1>
+    <p class="muted small">${ahead.length} concert${ahead.length === 1 ? '' : 's'} on your list</p>
+    <a class="btn primary block" href="#/plan" style="margin-bottom:8px">＋ Add a concert you want to see</a>
+    ${past.length ? `<div class="sectionlabel">Did you go?</div><ul class="list">${past.map(card).join('')}</ul>` : ''}
+    ${ahead.length ? `${past.length ? '<div class="sectionlabel">Coming up</div>' : ''}<ul class="list" style="margin-top:8px">${ahead.map(card).join('')}</ul>` : ''}`;
+}
+
+async function viewPlan(p) {
+  const link = safeLink(p.link);
+  const n = daysUntil(p.date);
+  const onSaleFuture = p.onSale && new Date(p.onSale) > new Date();
+  app.innerHTML = `
+    <a class="back" href="#/upcoming">‹ Upcoming</a>
+    <h1>${esc(p.artist)}</h1>
+    <div class="countdown" style="font-size:18px">${countdownText(p.date)}</div>
+    <div class="meta">${p.date ? esc(fmtDate(p.date)) : 'Date not announced yet'}${p.time ? ' · ' + esc(fmtTime(p.time)) : ''}</div>
+    <div class="meta">${esc([p.venue, p.city].filter(Boolean).join(', '))}</div>
+    <div style="margin-top:8px">${statusPill(p)}</div>
+
+    ${n !== null && n < 0 ? `<div class="ask"><p>This date has passed. Did you go?</p>
+      <div class="btnrow" style="margin-top:0"><button class="btn primary" data-act="went">Yes, log it</button><button class="btn" data-act="del">No, remove it</button></div></div>`
+    : `<button class="btn primary block" data-act="went" style="margin-top:14px">✓ I went! Move it to My Shows</button>`}
+
+    <div class="btnrow">
+      <a class="btn" href="#/plan/${p.id}">✎ Edit</a>
+      ${p.date ? '<button class="btn" data-act="cal">🗓 Calendar</button>' : '<span></span>'}
+    </div>
+
+    <section class="panel"><h2>Tickets</h2>
+      <dl class="kv">
+        <dt>Status</dt><dd>${p.status === 'got' ? 'Bought' : 'Not bought yet'}</dd>
+        ${p.onSale ? `<dt>On sale</dt><dd>${esc(fmtDateTime(p.onSale))}${onSaleFuture ? ' <span class="pill want">Soon</span>' : ''}</dd>` : ''}
+        ${p.price ? `<dt>${p.status === 'got' ? 'Paid' : 'Budget'}</dt><dd>${money(p.price)}</dd>` : ''}
+      </dl>
+      ${link ? `<a class="btn block" href="${esc(link)}" target="_blank" rel="noopener noreferrer" style="margin-top:12px">Open ticket page ↗</a>` : ''}
+      ${onSaleFuture ? '<button class="btn block" data-act="salecal" style="margin-top:10px">⏰ On-sale reminder</button>' : ''}
+    </section>
+    ${p.withWho ? `<section class="panel"><h2>Going with</h2><div>${esc(p.withWho)}</div></section>` : ''}
+    ${p.notes ? `<section class="panel"><h2>Notes</h2><div class="notes">${esc(p.notes)}</div></section>` : ''}
+    <div style="margin-top:24px"><button class="btn danger block" data-act="del">Remove from my list</button></div>`;
+
+  app.onclick = async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    if (act === 'went') {
+      // Turn the plan into a diary entry, keeping what's already known, then open it to add the setlist and rating.
+      const s = { ...p, ticket: { ...(p.ticket || {}), price: p.status === 'got' && p.price ? p.price : (p.ticket?.price || '') }, updatedAt: Date.now() };
+      delete s.kind; delete s.status; delete s.onSale; delete s.link; delete s.price;
+      if (!s.date) s.date = todayIso();
+      await dbPut('shows', s);
+      toast('Moved to My Shows. Add the setlist and your rating!');
+      location.hash = '#/edit/' + s.id;
+    }
+    if (act === 'del') {
+      if (!confirm(`Remove ${p.artist} from your upcoming list?`)) return;
+      await dbDel('shows', p.id); toast('Removed'); location.hash = '#/upcoming';
+    }
+    if (act === 'cal') saveIcs(icsForShow(p), `setlist-${safeName(p.artist)}.ics`);
+    if (act === 'salecal') saveIcs(icsForOnSale(p), `tickets-${safeName(p.artist)}.ics`);
+  };
+}
+
+// Calendar files (.ics) open in the phone's own Calendar app. No account or server needed.
+function icsText(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/[,;]/g, (c) => '\\' + c); }
+function icsStamp(d) { return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''); }
+function icsLocal(d) { const p = (x) => String(x).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T${p(d.getHours())}${p(d.getMinutes())}00`; }
+function icsWrap(uid, lines) {
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Setlist//Concert diary//EN', 'BEGIN:VEVENT',
+    `UID:${uid}@setlist`, `DTSTAMP:${icsStamp(new Date())}`, ...lines, 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+}
+function icsForShow(p) {
+  const loc = [p.venue, p.city].filter(Boolean).join(', ');
+  let when;
+  if (p.time) {
+    const start = new Date(`${p.date}T${p.time}:00`), end = new Date(start.getTime() + 3 * 3600000);
+    when = [`DTSTART:${icsLocal(start)}`, `DTEND:${icsLocal(end)}`];
+  } else {
+    const next = parseDate(p.date); next.setDate(next.getDate() + 1);
+    when = [`DTSTART;VALUE=DATE:${p.date.replace(/-/g, '')}`, `DTEND;VALUE=DATE:${icsLocal(next).slice(0, 8)}`];
+  }
+  return icsWrap(p.id, [...when, `SUMMARY:${icsText(p.artist + ' concert')}`, loc ? `LOCATION:${icsText(loc)}` : '',
+    safeLink(p.link) ? `URL:${safeLink(p.link)}` : ''].filter(Boolean));
+}
+function icsForOnSale(p) {
+  const start = new Date(p.onSale), end = new Date(start.getTime() + 30 * 60000);
+  return icsWrap(p.id + '-onsale', [`DTSTART:${icsLocal(start)}`, `DTEND:${icsLocal(end)}`,
+    `SUMMARY:${icsText('Tickets on sale: ' + p.artist)}`, safeLink(p.link) ? `URL:${safeLink(p.link)}` : '',
+    'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText('Tickets on sale: ' + p.artist)}`, 'TRIGGER:-PT15M', 'END:VALARM'].filter(Boolean));
+}
+function saveIcs(text, name) {
+  download(new Blob([text], { type: 'text/calendar' }), name);
+  toast('Open the file to add it to your calendar');
+}
+
+async function viewPlanForm(id) {
+  const existing = id ? await dbGet('shows', id) : null;
+  if (id && (!existing || !isPlan(existing))) { location.hash = '#/upcoming'; return; }
+  const p = existing || { artist: '', date: '', time: '', venue: '', city: '', status: 'want', onSale: '', price: '', link: '', withWho: '', notes: '' };
+  app.innerHTML = `
+    ${existing ? `<a class="back" href="#/show/${existing.id}">‹ Back</a><h1>Edit concert</h1>` : `
+    <h1>Add a show</h1>
+    <div class="seg" role="tablist"><a href="#/add">A show I went to</a><a class="on" href="#/plan" aria-current="page">A show I want to see</a></div>`}
+    <form novalidate>
+      <label class="field"><span>Artist <b class="req">*</b></span>
+        <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(p.artist)}" placeholder="Who do you want to see?"></label>
+      <div class="grid2">
+        <label class="field"><span>Date</span><input name="date" type="date" value="${esc(p.date)}"></label>
+        <label class="field"><span>Time</span><input name="time" type="time" value="${esc(p.time)}"></label>
+      </div>
+      <p class="muted small" style="margin:-6px 0 14px">No date yet? Leave it blank. It'll show as "Date not announced".</p>
+      <label class="field"><span>Venue</span><input name="venue" autocapitalize="words" value="${esc(p.venue)}"></label>
+      <label class="field"><span>City</span><input name="city" autocapitalize="words" value="${esc(p.city)}"></label>
+
+      <div class="field"><span>Tickets</span>
+        <div class="seg" style="margin:0">
+          <label><input type="radio" name="status" value="want" ${p.status !== 'got' ? 'checked' : ''}>☆ Want to go</label>
+          <label><input type="radio" name="status" value="got" ${p.status === 'got' ? 'checked' : ''}>🎟 Got tickets</label>
+        </div></div>
+      <label class="field"><span>Tickets go on sale</span><input name="onSale" type="datetime-local" value="${esc(p.onSale)}"></label>
+      <label class="field"><span id="priceLabel">${p.status === 'got' ? 'Price paid ($)' : 'Budget ($)'}</span>
+        <input name="price" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(p.price)}"></label>
+      <label class="field"><span>Ticket page link</span><input name="link" type="url" inputmode="url" value="${esc(p.link)}" placeholder="https://…"></label>
+      <label class="field"><span>Going with</span><input name="withWho" value="${esc(p.withWho)}" placeholder="Optional"></label>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="3" placeholder="Presale code reminder, who to text, songs you hope they play…">${esc(p.notes)}</textarea></label>
+      <div class="savebar"><button class="btn primary block" type="submit">${existing ? 'Save changes' : 'Add to Upcoming'}</button></div>
+    </form>`;
+  const form = $('form', app);
+  form.addEventListener('change', (e) => {
+    if (e.target.name === 'status') $('#priceLabel').textContent = e.target.value === 'got' ? 'Price paid ($)' : 'Budget ($)';
+  });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const artist = f.get('artist').trim();
+    if (!artist) { toast('Add the artist’s name'); form.artist.focus(); return; }
+    const link = f.get('link').trim();
+    if (link && !safeLink(link)) { toast('The ticket link should start with https://'); form.link.focus(); return; }
+    const plan = {
+      ...(existing || {}), id: existing ? existing.id : uid(), kind: 'plan',
+      artist, date: f.get('date') || '', time: f.get('time') || '', venue: f.get('venue').trim(), city: f.get('city').trim(),
+      status: f.get('status') === 'got' ? 'got' : 'want', onSale: f.get('onSale') || '',
+      price: f.get('price') ? Number(f.get('price')) : '', link, withWho: f.get('withWho').trim(), notes: f.get('notes').trim(),
+      rating: 0, setlist: [], media: [], ticket: existing?.ticket || {},
+      createdAt: existing ? existing.createdAt : Date.now(), updatedAt: Date.now(),
+    };
+    await dbPut('shows', plan);
+    askPersist();
+    toast(existing ? 'Changes saved' : 'Added to Upcoming');
+    location.hash = '#/show/' + plan.id;
+  };
+}
+
 // ===================== Stats =====================
 async function viewStats() {
-  const shows = await dbAll('shows');
+  const shows = await attendedShows();
   const yearNow = new Date().getFullYear();
   const rated = shows.filter((s) => s.rating);
   const avg = rated.length ? rated.reduce((a, s) => a + s.rating, 0) / rated.length : 0;

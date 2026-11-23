@@ -38,7 +38,7 @@ img, video { max-width: 100%; display: block; }
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
-  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  display: grid; grid-template-columns: repeat(4, 1fr);
   height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface); border-top: 1px solid var(--line);
@@ -176,6 +176,21 @@ ol.songs li.enc { list-style: none; margin: 8px 0 4px -28px; font-weight: 700; c
 .toplist { margin: 0; padding-left: 24px; }
 .toplist li { padding: 3px 0; }
 .toplist .c { color: var(--muted); }
+
+/* ---------- upcoming ---------- */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 16px; }
+.seg a, .seg label { min-height: 44px; display: flex; align-items: center; justify-content: center; text-align: center; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 15px; color: var(--muted); cursor: pointer; padding: 0 6px; }
+.seg a.on, .seg label:has(input:checked) { background: var(--accent); color: var(--accent-ink); }
+.seg label { position: relative; }
+/* Hidden radio buttons: override the full-width text-box style so they can't widen the page. */
+.seg input, .field .seg input { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.pill.want { background: var(--surface-2); color: var(--text); }
+.pill.got { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.countdown { color: var(--accent); font-weight: 700; font-size: 14px; }
+.sectionlabel { font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 18px 0 8px; font-weight: 700; }
+.ask { background: var(--surface-2); border: 1px solid var(--accent); border-radius: var(--radius); padding: 14px; margin: 12px 0; }
+.ask p { margin: 0 0 10px; font-weight: 600; }
+.card.plan { grid-template-columns: 58px 1fr; }
 
 /* ---------- shared view ---------- */
 .banner { background: var(--surface-2); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; font-size: 15px; }
