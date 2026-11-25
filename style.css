@@ -671,8 +671,10 @@ details.envelope .help { color: #3a3226; }
 /* ---------- 12. Dialog, toast, empty states ---------- */
 dialog {
   border: 0; padding: 30px 20px 20px; width: min(92vw, 460px); color: var(--ink);
-  background-color: #FBF7EE; background-image: var(--tex-grain); box-shadow: var(--sh-lift); overflow: visible;
+  background-color: #FBF7EE; background-image: var(--tex-grain); box-shadow: var(--sh-lift);
+  max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain;
 }
+dialog > .tape.tc { top: 2px; }
 dialog::backdrop { background: rgba(37,35,31,.55); }
 dialog h2 { font-family: var(--font-diary); font-size: 36px; line-height: 1; margin-bottom: 6px; }
 dialog .sub { font-family: var(--font-pen); font-size: 20px; color: var(--text-soft); margin: 0 0 18px; line-height: 1.2; }
@@ -742,3 +744,15 @@ dialog .check { font-size: 20px; }
   .tix-shape { -webkit-mask: none; mask: none; border: 2px solid CanvasText; }
   .worn, .stamp, .tape { -webkit-mask-image: none; mask-image: none; }
 }
+
+/* ---------- Send to my phone (QR) ---------- */
+.qrbox { background: #fff; padding: 10px; margin: 6px auto 0; width: min(100%, 340px); box-shadow: var(--sh-paper); transform: rotate(-.8deg); }
+.qrbox svg { display: block; width: 100%; height: auto; }
+.qr-part { font-family: var(--font-pen); font-weight: 700; font-size: 20px; text-align: center; color: var(--cherry); margin: 12px 0 0; min-height: 1.3em; }
+.qr-note { font-family: var(--font-serif); font-size: 15px; line-height: 1.4; color: var(--text-soft); margin: 14px 2px 6px; }
+.scanbox { position: relative; background: #1c1a17; aspect-ratio: 1; width: min(100%, 340px); margin: 6px auto 0; overflow: hidden; box-shadow: var(--sh-paper); }
+.scanbox video { width: 100%; height: 100%; object-fit: cover; }
+.scan-frame { position: absolute; inset: 14%; border: 3px dashed rgba(245,239,226,.85); pointer-events: none; }
+details.paste { margin: 14px 0 6px; }
+details.paste > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-family: var(--font-pen); font-weight: 700; font-size: 19px; color: var(--text-soft); }
+details.paste .field { margin: 8px 0 10px; }

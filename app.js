@@ -224,9 +224,10 @@ async function route() {
   const h = location.hash || '#/shows';
   window.scrollTo(0, 0);
   const [, view, id] = h.split('/');
-  document.body.dataset.view = h.startsWith('#share=') ? 'shared' : (!view || view === 'shows') ? 'home' : view;
+  document.body.dataset.view = h.startsWith('#share=') ? 'shared' : h.startsWith('#xfer=') ? 'xfer' : (!view || view === 'shows') ? 'home' : view;
   try {
     if (h.startsWith('#share=')) { setTab(''); return await viewShared(h.slice(7)); }
+    if (h.startsWith('#xfer=')) { setTab(''); return await viewXfer(h.slice(6)); }
     if (view === 'add') { setTab('add'); return await viewForm(null); }
     if (view === 'plan') { setTab(id ? '' : 'add'); return await viewPlanForm(id || null); }
     if (view === 'upcoming') { setTab('upcoming'); return await viewUpcoming(); }
@@ -1087,15 +1088,217 @@ async function viewStats() {
       </section>
     </div>`}
     <section class="housekeeping" aria-labelledby="hk-h"><h2 id="hk-h">Your data</h2>
-      <p>Your diary is stored only on this phone. Back it up now and then, so you don't lose it if you change phones or clear your browser.</p>
+      <p>Your diary is stored only on this device. Moving between your computer and your phone? Send it with a QR code. Nothing goes through the internet.</p>
+      <div class="btnrow">
+        <button class="btn" id="sendPhone">Send to my phone</button>
+        <button class="btn" id="receivePhone">Receive on this phone</button>
+      </div>
+      <p>Photos and videos don't fit in a QR code. To move everything, or to keep a safe copy, use Back up and Restore.</p>
       <div class="btnrow">
         <button class="btn" id="backup">Back up</button>
         <label class="btn filebtn">Restore<input type="file" accept="application/json,.json" id="restore"></label>
       </div>
     </section>`;
 
+  $('#sendPhone').onclick = openSendDialog;
+  $('#receivePhone').onclick = openReceiveDialog;
   $('#backup').onclick = backup;
   $('#restore').onchange = (e) => e.target.files[0] && restore(e.target.files[0]);
+}
+
+// ===================== Send to my phone (QR transfer, no server) =====================
+// The computer shows QR code(s) holding the diary's words. The phone's Receive button
+// scans them with its own camera, so shows land straight in the home-screen app.
+// Photos, videos and ticket files are too big for QR codes; Back up / Restore moves those.
+const scriptLoads = {};
+function loadScript(src) {
+  if (!scriptLoads[src]) scriptLoads[src] = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = src; s.onload = res;
+    s.onerror = () => { delete scriptLoads[src]; s.remove(); rej(new Error('Could not load the QR tools. Are you offline?')); };
+    document.head.appendChild(s);
+  });
+  return scriptLoads[src];
+}
+const XFER_CHUNK = 420; // characters per QR code: kept small so each code has big squares a phone camera reads easily
+async function makeXferCodes() {
+  const all = await dbAll('shows');
+  const shows = all.map((s) => {
+    const c = { ...s, media: [] };
+    if (c.ticket) { c.ticket = { ...c.ticket }; delete c.ticket.fileId; }
+    return c;
+  });
+  const code = await encodeShare({ app: 'setlist', t: 'xfer', v: 1, shows });
+  const sid = Math.random().toString(36).slice(2, 6);
+  const n = Math.max(1, Math.ceil(code.length / XFER_CHUNK));
+  const base = location.origin + location.pathname + '#xfer=';
+  const parts = Array.from({ length: n }, (_, i) => `${base}${i + 1}.${n}.${sid}.${code.slice(i * XFER_CHUNK, (i + 1) * XFER_CHUNK)}`);
+  return { count: all.length, parts };
+}
+function parseXfer(text) {
+  const m = /#xfer=(\d+)\.(\d+)\.([a-z0-9]+)\.([A-Za-z0-9_-]+)\s*$/.exec(String(text).trim());
+  return m ? { i: +m[1], n: +m[2], sid: m[3], data: m[4] } : null;
+}
+// Collects parts (in any order, repeats ignored) until a full set from one send has arrived.
+function xferCollector() {
+  let sid = null, n = 0; const got = new Map();
+  return {
+    add(part) {
+      if (!part || part.i < 1 || part.i > part.n) return null;
+      if (part.sid !== sid) { sid = part.sid; n = part.n; got.clear(); }
+      got.set(part.i, part.data);
+      return got.size === n ? Array.from({ length: n }, (_, i) => got.get(i + 1)).join('') : null;
+    },
+    get progress() { return { have: got.size, of: n }; },
+  };
+}
+async function importXfer(code) {
+  const data = await decodeShare(code);
+  if (data.app !== 'setlist' || data.t !== 'xfer' || !Array.isArray(data.shows)) throw new Error("That code isn't from Setlist.");
+  let added = 0, updated = 0, kept = 0;
+  for (const s of data.shows) {
+    if (!s || !s.id || !s.artist) continue;
+    const local = await dbGet('shows', s.id);
+    if (!local) { await dbPut('shows', { ...s, media: [], ticket: { ...(s.ticket || {}), fileId: null } }); added++; continue; }
+    if ((local.updatedAt || 0) > (s.updatedAt || 0)) { kept++; continue; } // this phone has the newer version
+    // Keep this phone's photos and ticket file; take the newer words.
+    await dbPut('shows', { ...local, ...s, media: local.media || [], ticket: { ...(s.ticket || {}), fileId: local.ticket?.fileId || null } });
+    updated++;
+  }
+  askPersist();
+  return { added, updated, kept };
+}
+function xferSummary(r) {
+  const bits = [];
+  if (r.added) bits.push(`${r.added} new show${r.added === 1 ? '' : 's'} added`);
+  if (r.updated) bits.push(`${r.updated} updated`);
+  if (r.kept) bits.push(`${r.kept} already newer here`);
+  return bits.join(' · ') || 'Everything was already here';
+}
+
+async function openSendDialog() {
+  let x;
+  try { await loadScript('vendor/qrcode-generator.min.js'); x = await makeXferCodes(); } catch (e) { toast(e.message); return; }
+  if (!x.count) { toast('Nothing to send yet. Log a show first.'); return; }
+  const dlg = document.createElement('dialog');
+  dlg.setAttribute('aria-labelledby', 'send-h');
+  dlg.innerHTML = `<span class="tape tc"></span>
+    <h2 id="send-h">send to my phone</h2>
+    <p class="sub">On your phone, open Setlist <b>from its home-screen icon</b>, go to Stats and tap <b>Receive on this phone</b>. Then point it at this code.</p>
+    <div class="qrbox" role="img" aria-label="QR code holding your ${x.count} shows"></div>
+    <p class="qr-part" aria-live="polite"></p>
+    <div class="btnrow" ${x.parts.length > 1 ? '' : 'hidden'}><button class="btn small" data-act="pause">Pause</button><button class="btn small" data-act="next">Next code</button></div>
+    <p class="qr-note">Sends the words for all ${x.count} show${x.count === 1 ? '' : 's'}: artists, dates, setlists, ratings, notes and ticket details. Photos, videos and ticket files stay here. Use Back up for those.</p>
+    <button class="link-red" data-act="close" style="width:100%">done</button>`;
+  document.body.appendChild(dlg);
+  const box = $('.qrbox', dlg), label = $('.qr-part', dlg);
+  let i = 0, timer = null, paused = false;
+  const draw = () => {
+    const qr = qrcode(0, 'L'); qr.addData(x.parts[i]); qr.make();
+    box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
+    label.textContent = x.parts.length > 1 ? `code ${i + 1} of ${x.parts.length}: they flip on their own, keep the camera on them` : 'one code holds everything';
+  };
+  const tick = () => { i = (i + 1) % x.parts.length; draw(); };
+  const play = () => { clearInterval(timer); if (x.parts.length > 1 && !paused) timer = setInterval(tick, 1100); };
+  dlg.addEventListener('close', () => { clearInterval(timer); dlg.remove(); });
+  dlg.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') dlg.close();
+    if (act === 'next') { tick(); play(); }
+    if (act === 'pause') { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; play(); }
+  });
+  draw(); play();
+  dlg.showModal();
+}
+
+async function openReceiveDialog() {
+  const dlg = document.createElement('dialog');
+  dlg.setAttribute('aria-labelledby', 'recv-h');
+  dlg.innerHTML = `<span class="tape tc"></span>
+    <h2 id="recv-h">receive on this phone</h2>
+    <p class="sub">On your computer, open Setlist, go to Stats and click <b>Send to my phone</b>. Point this camera at the code.</p>
+    <div class="scanbox"><video playsinline muted></video><span class="scan-frame" aria-hidden="true"></span></div>
+    <p class="qr-part" aria-live="polite">starting the camera…</p>
+    <details class="paste"><summary>No camera? Paste the link instead</summary>
+      <label class="field"><span class="lab">Link(s) from the other device</span><textarea rows="3" placeholder="https://…#xfer=…"></textarea></label>
+      <button class="btn small block" data-act="paste">Add these shows</button></details>
+    <button class="link-red" data-act="close" style="width:100%">cancel</button>`;
+  document.body.appendChild(dlg);
+  const video = $('video', dlg), status = $('.qr-part', dlg);
+  const col = xferCollector();
+  let stream = null, raf = 0, done = false, last = 0;
+  const canvas = document.createElement('canvas'), g = canvas.getContext('2d', { willReadFrequently: true });
+  const stop = () => { cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; };
+  const finish = async (code) => {
+    if (done) return; done = true; stop();
+    status.textContent = 'got it, adding your shows…';
+    try { const r = await importXfer(code); dlg.close(); toast(xferSummary(r)); route(); }
+    catch (e) { done = false; status.textContent = 'That didn’t work: ' + e.message; }
+  };
+  const feed = (text) => {
+    const part = parseXfer(text); if (!part) return false;
+    const code = col.add(part);
+    const p = col.progress;
+    status.textContent = p.of > 1 ? `caught ${p.have} of ${p.of} codes…` : 'caught it…';
+    if (code) finish(code);
+    return true;
+  };
+  const scan = (t) => {
+    raf = requestAnimationFrame(scan);
+    if (t - last < 180 || video.readyState < 2) return; last = t;
+    const s = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.round(video.videoWidth * s); canvas.height = Math.round(video.videoHeight * s);
+    g.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const hit = jsQR(g.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+    if (hit && hit.data) feed(hit.data);
+  };
+  dlg.addEventListener('close', () => { stop(); dlg.remove(); });
+  dlg.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') dlg.close();
+    if (act === 'paste') {
+      const lines = $('textarea', dlg).value.split(/\s+/).filter(Boolean);
+      let anyPart = false; for (const l of lines) anyPart = feed(l) || anyPart; // read every pasted link
+      if (!anyPart) status.textContent = 'That doesn’t look like a Setlist link.';
+      else if (!done) { const p = col.progress; status.textContent = `got ${p.have} of ${p.of} parts. Paste the rest too.`; }
+    }
+  });
+  dlg.showModal();
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser can’t use the camera here.');
+    await loadScript('vendor/jsqr.min.js');
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    if (!dlg.open) { stop(); return; }
+    video.srcObject = stream; await video.play();
+    status.textContent = 'looking for the code…';
+    raf = requestAnimationFrame(scan);
+  } catch (e) {
+    status.textContent = (e.name === 'NotAllowedError' ? 'Camera access was blocked. Allow it in Settings, or paste the link below.' : e.message + ' You can paste the link below.');
+    $('.paste', dlg).open = true; $('.scanbox', dlg).hidden = true;
+  }
+}
+
+// When a transfer code is opened as a normal link (e.g. from the phone's Camera app).
+async function viewXfer(hashData) {
+  const part = parseXfer('#xfer=' + hashData);
+  const iphoneNote = `<p>On an iPhone, the Camera app opens links in Safari, which keeps a <b>separate</b> diary from your home-screen app. To fill the home-screen app, open Setlist from its icon, go to Stats, tap <b>Receive on this phone</b> and scan the code there.</p>`;
+  if (!part) { app.innerHTML = `<div class="empty-page"><span class="tape tc"></span><p class="big-hand">this code got smudged.</p><p>Try sending again.</p><a class="btn" href="#/shows">Go to my diary</a></div>`; return; }
+  if (part.n > 1) {
+    app.innerHTML = `<div class="empty-page"><span class="tape tc"></span><p class="big-hand">that's part ${part.i} of ${part.n}.</p>
+      <p>Your diary was too big for one code, so it's split into ${part.n}. A normal camera can only read one at a time. Use the <b>Receive on this phone</b> button in Setlist (Stats tab), which collects them all.</p>
+      ${iphoneNote}<a class="btn stamp-btn block" href="#/stats">Go to Stats</a></div>`;
+    return;
+  }
+  let count = '?';
+  try { count = (await decodeShare(part.data)).shows.length; } catch (e) {}
+  app.innerHTML = `<div class="empty-page"><span class="tape tl"></span><span class="tape tr"></span>
+    <p class="big-hand">${count} show${count === 1 ? '' : 's'} from your other device</p>
+    <p>Add them to the diary in this browser? Shows already here are kept, and newer edits win.</p>
+    <button class="btn stamp-btn block" id="xferAdd">Add them to this diary</button>
+    ${iphoneNote}</div>`;
+  $('#xferAdd').onclick = async () => {
+    try { const r = await importXfer(part.data); toast(xferSummary(r)); location.hash = '#/shows'; }
+    catch (e) { toast('That didn’t work: ' + e.message); }
+  };
 }
 
 const blobToDataUrl = (b) => new Promise((r, j) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.onerror = () => j(fr.error); fr.readAsDataURL(b); });

@@ -4,7 +4,7 @@
 // IMPORTANT: bump the CACHE name below every time you republish, so phones pick up the new version.
 // It never sends your diary anywhere — it only stores the app's own files.
 
-const CACHE = "setlist-v3"; // change this name (v2, v3…) each time you republish
+const CACHE = "setlist-v4"; // change this name (v2, v3…) each time you republish
 
 // Files saved on first visit. Missing ones are skipped, so this is safe to keep as-is.
 const FONTS = ["nothing-you-could-do-latin-400-normal", "caveat-latin-500-normal", "caveat-latin-700-normal",
@@ -12,7 +12,8 @@ const FONTS = ["nothing-you-could-do-latin-400-normal", "caveat-latin-500-normal
   "barlow-condensed-latin-700-normal", "special-elite-latin-400-normal", "courier-prime-latin-400-normal",
   "newsreader-latin-400-normal", "newsreader-latin-400-italic"].map((f) => `./fonts/${f}.woff2`);
 const CORE = ["./", "./index.html", "./app.js", "./style.css", "./fonts.css", "./manifest.json", ...FONTS,
-  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png"];
+  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png",
+  "./vendor/qrcode-generator.min.js", "./vendor/jsqr.min.js"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
