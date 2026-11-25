@@ -1,0 +1,60 @@
+/* =====================================================================
+   SETLIST DIARY: TYPOGRAPHY SYSTEM
+   ---------------------------------------------------------------------
+   Every font in the app is defined here and referenced through the
+   --font-* tokens below. To try a different font (for example a licensed
+   copy of "Diary Indie" or "Wrong Diary"):
+     1. drop the .woff2 file into /fonts
+     2. add an @font-face block for it
+     3. point the matching --font-* token at the new family name
+   Nothing else in the app needs to change.
+
+   All bundled fonts are free, open-licensed fonts (SIL OFL 1.1 or
+   Apache 2.0); their licenses are in /fonts/LICENSE-*.txt. They are
+   stored inside the app, so they work offline and no request is ever
+   made to a font service.
+   ===================================================================== */
+
+/* -- Diary hand: slightly italic, scratchy, irregular baseline -------- */
+@font-face { font-family: "SD Diary"; src: url("fonts/nothing-you-could-do-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+/* -- Notes hand: a quicker, more legible pen for small annotations ---- */
+@font-face { font-family: "SD Pen"; src: url("fonts/caveat-latin-500-normal.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "SD Pen"; src: url("fonts/caveat-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+/* -- Marker: the black Sharpie on a taped-down stage setlist ----------- */
+@font-face { font-family: "SD Marker"; src: url("fonts/covered-by-your-grace-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+/* -- Poster: heavy condensed gig-poster / admission-ticket lettering --- */
+@font-face { font-family: "SD Poster"; src: url("fonts/anton-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+/* -- Print: condensed labels, buttons, small printed type -------------- */
+@font-face { font-family: "SD Print"; src: url("fonts/barlow-condensed-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "SD Print"; src: url("fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+/* -- Typewriter: dates, venues, seats, metadata ------------------------ */
+@font-face { font-family: "SD Typewriter"; src: url("fonts/special-elite-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+/* -- Typewriter (clean): typed form input, where legibility matters ---- */
+@font-face { font-family: "SD Type Clean"; src: url("fonts/courier-prime-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+/* -- Body serif: longer reading text ----------------------------------- */
+@font-face { font-family: "SD Serif"; src: url("fonts/newsreader-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "SD Serif"; src: url("fonts/newsreader-latin-400-italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+
+:root {
+  /* Font roles: use these tokens, never a family name, everywhere else. */
+  --font-diary:   "SD Diary", "Segoe Print", "Bradley Hand", cursive;
+  --font-pen:     "SD Pen", "Segoe Print", "Bradley Hand", cursive;
+  --font-marker:  "SD Marker", "Marker Felt", "Segoe Print", cursive;
+  --font-poster:  "SD Poster", "Impact", "Haettenschweiler", "Arial Narrow Bold", sans-serif;
+  --font-print:   "SD Print", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-type:    "SD Typewriter", "American Typewriter", "Courier New", monospace;
+  --font-type-clean: "SD Type Clean", "Courier New", monospace;
+  --font-serif:   "SD Serif", "Iowan Old Style", Georgia, serif;
+
+  /* Type scale (fluid where it matters) */
+  --fs-wordmark: clamp(56px, 15vw, 112px);
+  --fs-title:    clamp(40px, 10vw, 64px);
+  --fs-artist-xl: clamp(40px, 11vw, 76px);
+  --fs-artist:   clamp(26px, 7vw, 34px);
+  --fs-hand-lg:  30px;
+  --fs-hand:     24px;
+  --fs-hand-sm:  20px;
+  --fs-body:     18px;
+  --fs-meta:     14px;
+  --fs-micro:    11px;
+}

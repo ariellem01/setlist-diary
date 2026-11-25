@@ -1,5 +1,5 @@
 'use strict';
-/* Setlist — a private concert diary.
+/* Setlist Diary: a private concert diary.
    Everything is stored on this device (IndexedDB). Nothing is sent to any server.
    The only things that leave the phone are what you choose to share. */
 
@@ -53,6 +53,8 @@ function parseDate(iso) { return iso ? new Date(iso + 'T12:00:00') : null; }
 function fmtDate(iso, opts = { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' }) {
   const d = parseDate(iso); return d ? d.toLocaleDateString(undefined, opts) : '';
 }
+const handDate = (iso) => fmtDate(iso, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toLowerCase();
+const shortDate = (iso) => fmtDate(iso, { month: 'short', day: 'numeric', year: 'numeric' });
 function fmtTime(t) {
   if (!t) return '';
   const [h, m] = t.split(':').map(Number);
@@ -66,27 +68,14 @@ function todayIso() {
 function money(n) {
   return Number(n || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 }
-function starsHtml(n) {
-  n = Number(n) || 0;
-  if (!n) return '<span class="muted small">Not rated</span>';
-  let s = '';
-  for (let i = 1; i <= 5; i++) s += i <= n ? '★' : '<span class="off">★</span>';
-  return `<span class="stars" aria-label="${n} out of 5 stars">${s}</span>`;
-}
 function isEncoreLine(line) { return /^(-+\s*)?encore\b.*$/i.test(line.trim()); }
 function songsOnly(setlist) { return (setlist || []).filter((l) => l.trim() && !isEncoreLine(l)); }
-function songsHtml(setlist) {
-  const lines = (setlist || []).filter((l) => l.trim());
-  if (!lines.length) return '<p class="muted">No songs added.</p>';
-  return '<ol class="songs">' + lines.map((l) =>
-    isEncoreLine(l) ? `<li class="enc">Encore</li>` : `<li>${esc(l)}</li>`).join('') + '</ol>';
-}
 
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
 // Object URLs for photos/videos must be released when we leave a screen.
@@ -123,19 +112,121 @@ function download(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 function safeName(s) { return String(s || 'show').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 40) || 'show'; }
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+
+// ===================== Visual building blocks =====================
+// Hand-drawn ink marks live as <symbol>s in index.html.
+const ink = (id, cls = 'ink-svg') => `<svg class="${cls}" aria-hidden="true" focusable="false"><use href="#i-${id}"/></svg>`;
+// Stable pseudo-random number per show, so each ticket keeps its look between visits.
+function hash(str) { let h = 2166136261; for (const c of String(str)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+function starsInk(n) {
+  n = Number(n) || 0;
+  if (!n) return '<span class="unrated">not rated yet</span>';
+  let s = '';
+  for (let i = 1; i <= 5; i++) s += i <= n ? `<svg aria-hidden="true"><use href="#i-star"/></svg>` : `<svg class="off" aria-hidden="true"><use href="#i-star-o"/></svg>`;
+  return `<span class="stars-ink" role="img" aria-label="${n} out of 5 stars">${s}</span>`;
+}
+
+// The ticket designs. Labels are decorative print, the same on every ticket
+// of that design; everything in typewriter type is the user's own data.
+const TICKET_DESIGNS = [
+  { k: 'arena', label: 'Admit one' },
+  { k: 'ga', label: 'General admission' },
+  { k: 'indie', label: 'one night only' },
+  { k: 'theater', label: 'Theatre · admit one' },
+  { k: 'minimal', label: 'Admit one' },
+  { k: 'festival', label: 'Live in concert' },
+  { k: 'denim', label: 'Live on stage' },
+  { k: 'sage', label: 'Keep this stub' },
+];
+function ticketHtml(s, o = {}) {
+  const h = hash(s.id || s.artist);
+  const v = TICKET_DESIGNS[h % TICKET_DESIGNS.length];
+  const tilt = o.flat ? 0 : (((h >>> 5) % 25) - 12) / 10; // -1.2deg … 1.2deg
+  const d = parseDate(s.date);
+  const t = s.ticket || {};
+  const seat = [
+    t.section && `<span><b>Sec</b>${esc(t.section)}</span>`,
+    t.seat && `<span><b>Row/Seat</b>${esc(t.seat)}</span>`,
+    t.price && `<span><b>Paid</b>${money(t.price)}</span>`,
+  ].filter(Boolean).join('');
+  const isLink = o.link !== false;
+  const tag = isLink ? 'a' : 'div';
+  const label = `${s.artist}, ${shortDate(s.date)}${s.venue ? ', ' + s.venue : ''}${s.city ? ', ' + s.city : ''}${s.rating ? `, rated ${s.rating} of 5` : ''}`;
+  const attrs = isLink ? ` href="#/show/${esc(s.id)}" aria-label="${esc(label)}"` : '';
+  return `<${tag} class="tix v-${v.k}"${attrs} style="--tilt:${tilt}deg">
+    <div class="tix-shape">
+      <div class="tix-main">
+        <span class="tix-label" aria-hidden="true">${v.label}</span>
+        <span class="tix-artist">${esc(s.artist)}</span>
+        <span class="tix-meta">${esc(s.venue || '')}${s.venue && s.city ? '<br>' : ''}${esc(s.city || '')}${s.time ? `<br>Doors ${esc(fmtTime(s.time))}` : ''}</span>
+        ${seat ? `<span class="tix-seat">${seat}</span>` : ''}
+        <span class="tix-foot">${starsInk(s.rating)}</span>
+      </div>
+      <div class="tix-stub">
+        ${d ? `<span class="tix-mon">${d.toLocaleDateString(undefined, { month: 'short' })}</span>
+        <span class="tix-day">${d.getDate()}</span><span class="tix-yr">${d.getFullYear()}</span>` : '<span class="tix-mon">TBA</span>'}
+        ${o.num ? `<span class="tix-no" title="Diary entry ${o.num}">${String(o.num).padStart(3, '0')}</span>` : ''}
+      </div>
+    </div>
+  </${tag}>`;
+}
+
+function polaroidHtml(url, o = {}) {
+  return `<figure class="polaroid ${o.cls || ''}" style="${o.r !== undefined ? `--r:${o.r}deg` : ''}">
+    ${o.tape === false ? '' : '<span class="tape tc"></span>'}
+    <img src="${url}" alt="${esc(o.alt || 'Photo from the show')}" loading="lazy">
+    ${o.caption ? `<figcaption>${esc(o.caption)}</figcaption>` : ''}
+  </figure>`;
+}
+
+// The setlist, as a sheet taped to the stage floor. Tap a song to circle it.
+function setlistHtml(s, o = {}) {
+  const lines = (s.setlist || []).filter((l) => l.trim());
+  const favs = new Set((s.favs || []).map((x) => x.toLowerCase()));
+  let n = 0;
+  const items = lines.map((l) => {
+    if (isEncoreLine(l)) return `<li class="enc">encore${ink('under', 'u')}</li>`;
+    n++;
+    const fav = favs.has(l.toLowerCase());
+    const inner = `<span class="n">${n}</span><span class="t">${esc(l)}${ink('circle', 'ring')}</span>${ink('star', 'fav-star')}`;
+    return o.interactive
+      ? `<li><button type="button" class="song" data-song="${esc(l)}" aria-pressed="${fav}" aria-describedby="sl-hint">${inner}</button></li>`
+      : `<li><span class="song" ${fav ? 'aria-pressed="true"' : ''}>${inner}</span></li>`;
+  });
+  const count = songsOnly(s.setlist).length;
+  return `<section class="setlist-wrap" aria-labelledby="sl-h">
+    <span class="tape tl"></span><span class="tape tr"></span>
+    <div class="setlist-sheet">
+      <div class="sl-head"><h2 class="sl-title" id="sl-h">Setlist</h2>
+        <span class="sl-sub">${esc(shortDate(s.date))}${s.venue ? `<br>${esc(s.venue)}` : ''}<br>${count} song${count === 1 ? '' : 's'}</span></div>
+      ${lines.length ? `<ol class="sl">${items.join('')}</ol>` : `<p class="sl-empty">no songs written down yet${o.editHref ? ` · <a href="${o.editHref}">add the setlist</a>` : ''}</p>`}
+      ${o.interactive && count ? `<p class="sl-hint" id="sl-hint">${ink('star')} tap a song to circle it as a favourite</p>` : ''}
+    </div>
+  </section>`;
+}
 
 // ===================== Router =====================
 function setTab(name) {
-  document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === name));
+  document.querySelectorAll('.tabbar a').forEach((a) => {
+    const on = a.dataset.tab === name;
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
 }
 async function route() {
   releaseUrls();
   app.onclick = null;
   const h = location.hash || '#/shows';
   window.scrollTo(0, 0);
+  const [, view, id] = h.split('/');
+  document.body.dataset.view = h.startsWith('#share=') ? 'shared' : (!view || view === 'shows') ? 'home' : view;
   try {
     if (h.startsWith('#share=')) { setTab(''); return await viewShared(h.slice(7)); }
-    const [, view, id] = h.split('/');
     if (view === 'add') { setTab('add'); return await viewForm(null); }
     if (view === 'plan') { setTab(id ? '' : 'add'); return await viewPlanForm(id || null); }
     if (view === 'upcoming') { setTab('upcoming'); return await viewUpcoming(); }
@@ -145,113 +236,218 @@ async function route() {
     setTab('shows'); return await viewList();
   } catch (e) {
     console.error(e);
-    app.innerHTML = `<div class="empty"><div class="big">⚠️</div><p>Something went wrong: ${esc(e.message)}</p>
-      <a class="btn" href="#/shows">Back to My Shows</a></div>`;
+    app.innerHTML = `<div class="empty-page"><span class="tape tc"></span>
+      <p class="big-hand">well, that didn't work.</p>
+      <p>Something went wrong: ${esc(e.message)}</p>
+      <a class="btn" href="#/shows">Back to my diary</a></div>`;
   }
 }
 window.addEventListener('hashchange', route);
 
-// ===================== My Shows =====================
+// ===================== Home: the diary & the collection =====================
 // Diary entries are shows you went to. Future concerts are stored alongside them with kind: 'plan'.
 const isPlan = (s) => s.kind === 'plan';
 async function attendedShows() { return (await dbAll('shows')).filter((s) => !isPlan(s)); }
+const byDateDesc = (a, b) => (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || '');
 
 async function viewList() {
-  const shows = (await attendedShows()).sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || ''));
+  const all = await dbAll('shows');
+  const shows = all.filter((s) => !isPlan(s)).sort(byDateDesc);
+  const plans = all.filter(isPlan);
+  const nextPlan = plans.filter((p) => p.date && daysUntil(p.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0]
+    || plans.find((p) => !p.date);
+  const media = new Map((await dbAll('media')).map((m) => [m.id, m]));
+  const photoOf = new Map();
+  for (const s of shows) {
+    const m = (s.media || []).map((id) => media.get(id)).find((x) => x && x.type.startsWith('image/'));
+    if (m) photoOf.set(s.id, blobUrl(m.blob));
+  }
+  // Entry numbers: the 1st show you ever logged is No. 001.
+  const numOf = new Map([...shows].reverse().map((s, i) => [s.id, i + 1]));
+
+  const yearNow = String(new Date().getFullYear());
+  const rated = shows.filter((s) => s.rating);
+  const avg = rated.length ? rated.reduce((a, s) => a + s.rating, 0) / rated.length : 0;
+
+  const hero = `<section class="hero">
+    <div>
+      <h1 class="wordmark">Setlist Diary${ink('under', 'u')}</h1>
+      <p class="hero-sub">a little record of the nights worth remembering</p>
+    </div>
+    <span class="stamp" aria-hidden="true">Private · this phone only</span>
+  </section>`;
+
+  const nextUp = nextPlan ? `<section class="nextup" aria-label="Next up">
+      <p class="kicker">next up ${ink('arrow')}</p>
+      <ul class="flyer-grid" style="grid-template-columns:1fr">${flyerHtml(nextPlan)}</ul>
+    </section>` : '';
+
   if (!shows.length) {
-    app.innerHTML = `<div class="empty">
-      <div class="big">🎤</div>
-      <h1>No shows yet</h1>
-      <p class="muted">Log the concerts you've been to: the setlist, your rating, photos and your ticket.</p>
-      <a class="btn primary block" href="#/add">＋ Add your first show</a>
-      <p class="muted small" style="margin-top:18px">🔒 Your diary is private and stays on this phone.</p>
-    </div>`;
+    app.innerHTML = `${hero}
+      <div class="home-grid">
+        <div class="empty-page"><span class="tape tl"></span><span class="tape tr"></span>
+          <p class="big-hand">nothing here yet.</p>
+          <p>Every show you go to becomes a ticket stub in this book: the setlist, your rating, the photos and the ticket itself.</p>
+          <div class="tix-ghost">your first ticket goes here</div>
+          <a class="btn stamp-btn block" href="#/add">${ink('plus')} Add your first show</a>
+          <p class="lock-note">${ink('ast')} your diary stays private, on this phone.</p>
+        </div>
+        ${nextUp || `<section class="nextup"><p class="kicker">on the horizon ${ink('arrow')}</p>
+          <a class="btn block" href="#/plan">Add a show you want to see</a></section>`}
+      </div>`;
     return;
   }
-  app.innerHTML = `
-    <h1>My Shows</h1>
-    <p class="muted small">${shows.length} show${shows.length === 1 ? '' : 's'} · private to this phone</p>
-    <input class="search" type="search" placeholder="Search artist, venue, city or song" aria-label="Search shows">
-    <ul class="list"></ul>
-    <p class="muted empty-search" hidden>No shows match your search.</p>`;
-  const ul = $('.list', app);
-  const media = new Map((await dbAll('media')).map((m) => [m.id, m]));
-  for (const s of shows) {
-    const d = parseDate(s.date);
-    const firstPhoto = (s.media || []).map((id) => media.get(id)).find((m) => m && m.type.startsWith('image/'));
-    const li = document.createElement('li');
-    li.dataset.search = [s.artist, s.venue, s.city, ...(s.setlist || [])].join(' ').toLowerCase();
-    li.innerHTML = `<a class="card" href="#/show/${s.id}">
-      <div class="datebox">${d ? `<div class="m">${d.toLocaleDateString(undefined, { month: 'short' })}</div>
-        <div class="d">${d.getDate()}</div><div class="y">${d.getFullYear()}</div>` : ''}</div>
-      <div><div class="t">${esc(s.artist)}</div>
-        <div class="s">${esc([s.venue, s.city].filter(Boolean).join(' · ')) || '&nbsp;'}</div>
-        <div>${starsHtml(s.rating)}</div></div>
-      ${firstPhoto ? `<img class="thumb" alt="" src="${blobUrl(firstPhoto.blob)}">` : '<div></div>'}
-    </a>`;
-    ul.appendChild(li);
+
+  const latest = shows[0];
+  const latestPhoto = photoOf.get(latest.id);
+  app.innerHTML = `${hero}
+    <p class="hero-stats">
+      <span><b>${shows.length}</b> show${shows.length === 1 ? '' : 's'}</span>
+      <span>·</span><span><b>${shows.filter((s) => (s.date || '').startsWith(yearNow)).length}</b> in ${yearNow}</span>
+      ${avg ? `<span>·</span><span>avg <b>${avg.toFixed(1)}</b> ★</span>` : ''}
+      <a href="#/stats">the numbers ${ink('arrow')}</a>
+    </p>
+
+    <div class="home-grid">
+      <section class="latest" aria-label="Latest show">
+        <p class="kicker">the latest one ${ink('arrow')}</p>
+        ${latestPhoto ? polaroidHtml(latestPhoto, { r: 7, alt: '' }) : ''}
+        ${ticketHtml(latest, { num: numOf.get(latest.id) })}
+      </section>
+      ${nextUp || `<section class="nextup" aria-label="Next up"><p class="kicker">on the horizon ${ink('arrow')}</p>
+        <div class="empty-page" style="margin-top:0"><p>Nothing planned. Keep a list of shows you'd love to see.</p>
+        <a class="btn block" href="#/plan">Add a show you want to see</a></div></section>`}
+    </div>
+
+    <div class="log-cta"><a class="btn stamp-btn" href="#/add">${ink('plus')} Log a show</a><span class="annot" aria-hidden="true">${ink('arrow')} got a new stub?</span></div>
+
+    <section aria-labelledby="coll-h">
+      <div class="section-head"><h2 id="coll-h">the collection</h2><span class="aside">${shows.length} stub${shows.length === 1 ? '' : 's'} &amp; counting</span></div>
+      <div class="archive-tools">
+        <div class="search-wrap">${ink('note')}<input class="search" type="search" placeholder="search artist, venue, city or song" aria-label="Search shows"></div>
+        <div class="tool-row">
+          <div class="viewtabs" role="group" aria-label="View the collection as">
+            <button type="button" data-v="tickets">tickets</button><button type="button" data-v="diary">diary</button><button type="button" data-v="list">list</button>
+          </div>
+          <label class="sortpick">sort <select aria-label="Sort shows">
+            <option value="new">newest first</option><option value="old">oldest first</option><option value="rating">best rated</option></select></label>
+        </div>
+      </div>
+      <div id="archive"></div>
+      <p class="no-match" hidden>nothing in the diary matches that…</p>
+    </section>`;
+
+  for (const s of shows) s._search = [s.artist, s.venue, s.city, ...(s.setlist || [])].join(' ').toLowerCase();
+  let mode = store.get('sd-view', 'tickets'); if (!['tickets', 'diary', 'list'].includes(mode)) mode = 'tickets';
+  let sort = store.get('sd-sort', 'new'); if (!['new', 'old', 'rating'].includes(sort)) sort = 'new';
+  const sel = $('.sortpick select', app); sel.value = sort;
+  const box = $('#archive', app);
+
+  function render() {
+    const q = $('.search', app).value.trim().toLowerCase();
+    let list = shows.filter((s) => !q || s._search.includes(q));
+    if (sort === 'old') list = [...list].reverse();
+    if (sort === 'rating') list = [...list].sort((a, b) => (b.rating || 0) - (a.rating || 0) || byDateDesc(a, b));
+    app.querySelectorAll('.viewtabs button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.v === mode));
+    $('.no-match', app).hidden = list.length > 0;
+    const groups = [];
+    if (sort === 'rating') groups.push({ label: 'best first', items: list });
+    else for (const s of list) {
+      const y = (s.date || '').slice(0, 4) || 'undated';
+      if (!groups.length || groups[groups.length - 1].label !== y) groups.push({ label: y, items: [] });
+      groups[groups.length - 1].items.push(s);
+    }
+    box.innerHTML = groups.map((g) => `<section class="year-group" aria-label="${esc(g.label)}">
+      <div class="year-head"><h3>${esc(g.label)}${ink('under', 'u')}</h3><span class="count">${g.items.length} show${g.items.length === 1 ? '' : 's'}</span></div>
+      ${renderItems(g.items)}</section>`).join('');
   }
-  $('.search', app).addEventListener('input', (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    let any = false;
-    ul.querySelectorAll('li').forEach((li) => { const hit = !q || li.dataset.search.includes(q); li.hidden = !hit; any ||= hit; });
-    $('.empty-search', app).hidden = any;
+  function renderItems(items) {
+    if (mode === 'diary') return `<ul class="diary-list">${items.map((s) => `<li><a class="diary-entry" href="#/show/${esc(s.id)}">
+        <span class="de-date">${esc(handDate(s.date))}</span>
+        <span class="de-body"><span class="de-artist">${esc(s.artist)}</span>
+          <span class="de-venue">${esc([s.venue, s.city].filter(Boolean).join(' · '))}</span>
+          <span class="de-stars">${starsInk(s.rating)}</span>
+          ${s.notes ? `<span class="de-note">${esc(s.notes.length > 170 ? s.notes.slice(0, 170).trim() + '…' : s.notes)}</span>` : ''}</span>
+        ${photoOf.get(s.id) ? `<span class="de-photo polaroid" aria-hidden="true"><img src="${photoOf.get(s.id)}" alt=""></span>` : ''}
+      </a></li>`).join('')}</ul>`;
+    if (mode === 'list') return `<ul class="compact-list">${items.map((s) => { const d = parseDate(s.date); return `<li><a href="#/show/${esc(s.id)}">
+        <span class="cl-date">${d ? `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}.${String(d.getFullYear()).slice(2)}` : '--'}</span>
+        <span><span class="cl-artist">${esc(s.artist)}</span><span class="cl-venue">${esc([s.venue, s.city].filter(Boolean).join(' · '))}</span></span>
+        <span class="cl-stars">${s.rating ? starsInk(s.rating) : ''}</span></a></li>`; }).join('')}</ul>`;
+    return `<ul class="ticket-grid">${items.map((s) => `<li>${ticketHtml(s, { num: numOf.get(s.id) })}</li>`).join('')}</ul>`;
+  }
+  $('.search', app).addEventListener('input', render);
+  sel.addEventListener('change', () => { sort = sel.value; store.set('sd-sort', sort); render(); });
+  $('.viewtabs', app).addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]'); if (!b) return;
+    mode = b.dataset.v; store.set('sd-view', mode); render();
   });
+  render();
 }
 
-// ===================== Show detail =====================
+// ===================== Concert page: a scrapbook spread =====================
 async function viewShow(id) {
   const s = await dbGet('shows', id);
   if (!s) { location.hash = '#/shows'; return; }
-  if (isPlan(s)) { setTab('upcoming'); return viewPlan(s); }
+  if (isPlan(s)) { setTab('upcoming'); document.body.dataset.view = 'plan-detail'; return viewPlan(s); }
   const media = (await Promise.all((s.media || []).map((m) => dbGet('media', m)))).filter(Boolean);
   const t = s.ticket || {};
   const ticketFile = t.fileId ? await dbGet('media', t.fileId) : null;
   const hasTicket = t.seat || t.section || t.price || t.order || ticketFile || t.givenTo;
+  const attended = (await attendedShows()).sort(byDateDesc).reverse();
+  const num = attended.findIndex((x) => x.id === s.id) + 1;
+
+  const photos = media.map((m, i) => m.type.startsWith('video/')
+    ? `<figure class="polaroid video"><span class="tape tc"></span><video src="${blobUrl(m.blob)}" controls playsinline preload="metadata"></video><figcaption>▶ ${esc(m.name || 'video')}</figcaption></figure>`
+    : polaroidHtml(blobUrl(m.blob), { caption: i === 0 ? shortDate(s.date).toLowerCase() : '' })).join('');
 
   app.innerHTML = `
-    <a class="back" href="#/shows">‹ My Shows</a>
-    ${media.length ? `<div class="gallery">${media.map((m) => m.type.startsWith('video/')
-      ? `<video src="${blobUrl(m.blob)}" controls playsinline preload="metadata"></video>`
-      : `<img src="${blobUrl(m.blob)}" alt="Photo from the show">`).join('')}</div>` : ''}
-    <h1>${esc(s.artist)}</h1>
-    <div class="meta">${esc(fmtDate(s.date))}${s.time ? ' · ' + esc(fmtTime(s.time)) : ''}</div>
-    <div class="meta">${esc([s.venue, s.city].filter(Boolean).join(', '))}</div>
-    ${s.withWho ? `<div class="meta">With ${esc(s.withWho)}</div>` : ''}
-    <div style="margin-top:6px;font-size:22px">${starsHtml(s.rating)}</div>
-
-    <div class="btnrow">
-      <button class="btn primary" id="shareBtn">↗ Share</button>
-      <a class="btn" href="#/edit/${s.id}">✎ Edit</a>
-    </div>
-
-    <section class="panel"><h2>Setlist <span class="muted small">(${songsOnly(s.setlist).length} songs)</span></h2>${songsHtml(s.setlist)}</section>
-    ${s.notes ? `<section class="panel"><h2>My notes</h2><div class="notes">${esc(s.notes)}</div></section>` : ''}
-
-    ${hasTicket ? `<section class="panel"><h2>🎟 Ticket</h2>
-      <dl class="kv">
-        ${t.section ? `<dt>Section</dt><dd>${esc(t.section)}</dd>` : ''}
-        ${t.seat ? `<dt>Row / seat</dt><dd>${esc(t.seat)}</dd>` : ''}
-        ${t.price ? `<dt>Paid</dt><dd>${money(t.price)}</dd>` : ''}
-        ${t.order ? `<dt>Order #</dt><dd>${esc(t.order)}</dd>` : ''}
-        ${t.givenTo ? `<dt>For</dt><dd>${esc(t.givenTo)} ${t.transferred
-          ? '<span class="pill ok">✓ Transferred</span>' : '<span class="pill no">Not transferred yet</span>'}</dd>` : ''}
-      </dl>
-      ${ticketFile ? (ticketFile.type.startsWith('image/')
-        ? `<img class="ticketimg" src="${blobUrl(ticketFile.blob)}" alt="Ticket">`
-        : `<p class="muted small">📄 ${esc(ticketFile.name || 'Ticket file')}</p>`) : ''}
-      ${ticketFile ? `<div class="btnrow">
-        <a class="btn" href="${blobUrl(ticketFile.blob)}" target="_blank" rel="noopener">Open ticket</a>
-        <button class="btn" id="sendTicket">Send to a friend</button></div>
-        <p class="muted small">Only works for print-at-home or PDF tickets. Mobile tickets with a moving barcode must be transferred in the ticket seller's app.</p>` : ''}
-    </section>` : ''}
-
-    <div style="margin-top:24px"><button class="btn danger block" id="delBtn">Delete this show</button></div>`;
+    <a class="back" href="#/shows">${ink('back')} back to the diary</a>
+    <article class="spread journal">
+      <div class="page">
+        <p class="entry-date">${esc(handDate(s.date))}${s.time ? ` <span style="white-space:nowrap">· ${esc(fmtTime(s.time).toLowerCase())}</span>` : ''}</p>
+        <h1 class="entry-artist worn">${esc(s.artist)}</h1>
+        ${s.venue || s.city ? `<p class="entry-venue">${esc([s.venue, s.city].filter(Boolean).join(', '))}</p>` : ''}
+        ${s.withWho ? `<p class="entry-with">with ${esc(s.withWho)}</p>` : ''}
+        <div class="entry-rating">${starsInk(s.rating)}${s.rating ? `<span class="annot">${s.rating} out of 5</span>` : ''}</div>
+        ${photos ? `<div class="photos" aria-label="Photos and videos">${photos}</div>` : ''}
+        <div class="entry-ticket">${ticketHtml(s, { link: false, num, flat: true })}</div>
+        <div class="entry-actions">
+          <button class="btn stamp-btn" id="shareBtn">Share</button>
+          <a class="btn" href="#/edit/${esc(s.id)}">Edit</a>
+        </div>
+      </div>
+      <div class="page">
+        ${setlistHtml(s, { interactive: true, editHref: `#/edit/${s.id}` })}
+        <section class="lined-note" aria-labelledby="notes-h"><span class="tape tc"></span>
+          <h2 id="notes-h">notes from the night</h2>
+          ${s.notes ? `<p class="notes">${esc(s.notes)}</p>` : `<p class="notes faint">nothing written yet… <a href="#/edit/${esc(s.id)}">add a few lines</a></p>`}
+        </section>
+        ${hasTicket ? `<section class="wallet" aria-labelledby="w-h">
+          <h2 id="w-h">Ticket</h2>
+          <dl>
+            ${t.section ? `<dt>Section</dt><dd>${esc(t.section)}</dd>` : ''}
+            ${t.seat ? `<dt>Row / seat</dt><dd>${esc(t.seat)}</dd>` : ''}
+            ${t.price ? `<dt>Paid</dt><dd>${money(t.price)}</dd>` : ''}
+            ${t.order ? `<dt>Order #</dt><dd>${esc(t.order)}</dd>` : ''}
+            ${t.givenTo ? `<dt>For</dt><dd>${esc(t.givenTo)}</dd>` : ''}
+          </dl>
+          ${t.givenTo ? (t.transferred ? '<span class="stamp ok">✓ Transferred</span>' : '<span class="stamp no">Not transferred yet</span>') : ''}
+          ${ticketFile ? (ticketFile.type.startsWith('image/')
+            ? `<figure class="ticket-photo"><span class="tape tc"></span><img src="${blobUrl(ticketFile.blob)}" alt="Ticket"></figure>`
+            : `<span class="file-chip">📄 ${esc(ticketFile.name || 'Ticket file')}</span>`) : ''}
+          ${ticketFile ? `<div class="btnrow">
+            <a class="btn small" href="${blobUrl(ticketFile.blob)}" target="_blank" rel="noopener">Open ticket</a>
+            <button class="btn small" id="sendTicket">Send to a friend</button></div>
+            <p class="fine">Only works for print-at-home or PDF tickets. Mobile tickets with a moving barcode must be transferred in the ticket seller's app.</p>` : ''}
+        </section>` : ''}
+        <div class="danger-zone"><button class="link-red" id="delBtn">Delete this show</button></div>
+      </div>
+    </article>`;
 
   $('#shareBtn').onclick = () => openShareDialog(s, media);
   $('#delBtn').onclick = async () => {
-    if (!confirm(`Delete ${s.artist} (${fmtDate(s.date, { month: 'short', day: 'numeric', year: 'numeric' })})? Its photos and videos will be deleted too. This can't be undone.`)) return;
+    if (!confirm(`Delete ${s.artist} (${shortDate(s.date)})? Its photos and videos will be deleted too. This can't be undone.`)) return;
     for (const m of [...(s.media || []), t.fileId].filter(Boolean)) await dbDel('media', m);
     await dbDel('shows', s.id);
     toast('Show deleted');
@@ -262,6 +458,17 @@ async function viewShow(id) {
     const f = new File([ticketFile.blob], ticketFile.name || `ticket-${safeName(s.artist)}`, { type: ticketFile.type });
     if (!(await shareFiles([f], `Ticket: ${s.artist}`))) { download(f, f.name); toast('Ticket saved. Send it from your files.'); }
   };
+  // Circle favourite songs on the setlist.
+  app.querySelector('.sl')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('button.song'); if (!b) return;
+    const song = b.dataset.song, key = song.toLowerCase();
+    const favs = (s.favs || []).filter((x) => x.toLowerCase() !== key);
+    const on = b.getAttribute('aria-pressed') !== 'true';
+    if (on) favs.push(song);
+    s.favs = favs;
+    b.setAttribute('aria-pressed', on);
+    try { await dbPut('shows', { ...s, updatedAt: Date.now() }); } catch (err) { toast('Could not save that: ' + err.message); }
+  });
 }
 
 // ===================== Share =====================
@@ -295,15 +502,20 @@ async function decodeShare(code) {
 
 function openShareDialog(s, media) {
   const dlg = document.createElement('dialog');
-  dlg.innerHTML = `
-    <h2>Share this show</h2>
-    <p class="muted small">Your diary stays private. You choose what to send.</p>
-    <button class="btn primary block" data-act="link">🔗 Share a link</button>
-    <p class="muted small" style="margin:6px 0 14px">Sends the artist, date, venue, rating and setlist. Photos, your ticket and who you went with are never included.</p>
-    <label class="check"><input type="checkbox" data-notes> Include my notes in the link</label>
-    <button class="btn block" data-act="card" style="margin-top:8px">🖼 Share as a picture</button>
-    <p class="muted small" style="margin:6px 0 14px">Makes an image with ${media.some((m) => m.type.startsWith('image/')) ? 'your first photo, ' : ''}the details and the setlist, ready for Messages or Instagram.</p>
-    <button class="btn block" data-act="close">Cancel</button>`;
+  dlg.setAttribute('aria-labelledby', 'share-h');
+  dlg.innerHTML = `<span class="tape tc"></span>
+    <h2 id="share-h">pass it on</h2>
+    <p class="sub">Your diary stays private. You choose what to send.</p>
+    <div class="opt">
+      <button class="btn stamp-btn block" data-act="link">Share a link</button>
+      <p>Sends the artist, date, venue, rating and setlist. Photos, your ticket and who you went with are never included.</p>
+      <label class="check"><input type="checkbox" data-notes> Include my notes in the link</label>
+    </div>
+    <div class="opt">
+      <button class="btn block" data-act="card">Share as a picture</button>
+      <p>Makes an image with ${media.some((m) => m.type.startsWith('image/')) ? 'your first photo, ' : ''}the details and the setlist, ready for Messages or Instagram.</p>
+    </div>
+    <button class="link-red" data-act="close" style="width:100%">cancel</button>`;
   document.body.appendChild(dlg);
   dlg.addEventListener('close', () => dlg.remove());
   dlg.addEventListener('click', async (e) => {
@@ -314,7 +526,7 @@ function openShareDialog(s, media) {
       const payload = { v: 1, a: s.artist, d: s.date, t: s.time, ve: s.venue, c: s.city, r: s.rating, sl: s.setlist };
       if ($('[data-notes]', dlg).checked && s.notes) payload.n = s.notes;
       const url = location.origin + location.pathname + '#share=' + (await encodeShare(payload));
-      const text = `${s.artist} · ${fmtDate(s.date, { month: 'short', day: 'numeric', year: 'numeric' })}${s.venue ? ' · ' + s.venue : ''}`;
+      const text = `${s.artist} · ${shortDate(s.date)}${s.venue ? ' · ' + s.venue : ''}`;
       dlg.close();
       if (navigator.share) {
         try { await navigator.share({ title: `Setlist: ${s.artist}`, text, url }); return; }
@@ -334,70 +546,103 @@ function openShareDialog(s, media) {
   dlg.showModal();
 }
 
+// The shareable picture: a diary page with a taped polaroid and the setlist.
 async function makeCard(s, photo) {
-  const W = 1080, H = 1350, P = 72;
+  const W = 1080, H = 1350, P = 80;
+  try { await Promise.all(['40px "SD Poster"', '40px "SD Typewriter"', '40px "SD Marker"', '40px "SD Diary"', '700 40px "SD Pen"'].map((f) => document.fonts.load(f))); } catch (e) {}
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const g = c.getContext('2d');
-  g.fillStyle = '#14111f'; g.fillRect(0, 0, W, H);
-  let y = P;
+  const INK = '#25231F', SOFT = '#574F43', RED = '#B52E3D', PAPER = '#F5EFE2';
+  g.fillStyle = PAPER; g.fillRect(0, 0, W, H);
+  // paper grain
+  for (let i = 0; i < 9000; i++) { g.fillStyle = `rgba(80,60,30,${Math.random() * 0.06})`; g.fillRect(Math.random() * W, Math.random() * H, 1.6, 1.6); }
+  const fit = (text, maxW) => { let t = text; while (g.measureText(t).width > maxW && t.length > 1) t = t.slice(0, -2) + '…'; return t; };
+  const tape = (x, y, w, h, rot) => { g.save(); g.translate(x, y); g.rotate(rot); g.fillStyle = 'rgba(226,206,155,.85)'; g.fillRect(-w / 2, -h / 2, w, h); g.restore(); };
+  let y = 70;
   if (photo) {
     try {
       const url = URL.createObjectURL(photo.blob);
       const img = new Image(); img.src = url; await img.decode();
-      const ph = 560, r = Math.max(W / img.naturalWidth, ph / img.naturalHeight);
-      const sw = W / r, sh = ph / r;
-      g.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2, sw, sh, 0, 0, W, ph);
+      const fw = 600, ph = 540, fh = ph + 96;
+      g.save(); g.translate(W / 2 + 40, y + fh / 2); g.rotate(-0.045);
+      g.shadowColor = 'rgba(37,35,31,.35)'; g.shadowBlur = 24; g.shadowOffsetY = 10;
+      g.fillStyle = '#FBF8F1'; g.fillRect(-fw / 2, -fh / 2, fw, fh);
+      g.shadowColor = 'transparent';
+      const iw = fw - 40, r = Math.max(iw / img.naturalWidth, ph / img.naturalHeight), sw = iw / r, sh = ph / r;
+      g.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2, sw, sh, -fw / 2 + 20, -fh / 2 + 20, iw, ph);
+      g.fillStyle = SOFT; g.font = '700 38px "SD Pen", cursive'; g.textBaseline = 'middle';
+      g.fillText(shortDate(s.date).toLowerCase(), -fw / 2 + 28, fh / 2 - 38);
+      g.restore();
+      tape(W / 2 + 40, y + 4, 170, 46, -0.08);
       URL.revokeObjectURL(url);
-      const grad = g.createLinearGradient(0, ph - 200, 0, ph);
-      grad.addColorStop(0, 'rgba(20,17,31,0)'); grad.addColorStop(1, 'rgba(20,17,31,1)');
-      g.fillStyle = grad; g.fillRect(0, ph - 200, W, 200);
-      y = ph + 10;
+      y += fh + 50;
     } catch (e) {}
   }
-  const font = (w, sz) => `${w} ${sz}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-  const fit = (text, w, maxW) => { let t = text; while (g.measureText(t).width > maxW && t.length > 1) t = t.slice(0, -2) + '…'; return t; };
   g.textBaseline = 'top';
-  g.fillStyle = '#f5f0ff'; g.font = font(800, 76);
-  g.fillText(fit(s.artist, 800, W - 2 * P), P, y); y += 96;
-  g.fillStyle = '#b3a9cc'; g.font = font(500, 38);
-  g.fillText(fit([fmtDate(s.date, { month: 'long', day: 'numeric', year: 'numeric' }), s.venue, s.city].filter(Boolean).join(' · '), 500, W - 2 * P), P, y); y += 56;
-  if (s.rating) { g.fillStyle = '#ff5a5f'; g.font = font(400, 48); g.fillText('★'.repeat(s.rating) + '☆'.repeat(5 - s.rating), P, y); y += 72; }
-  y += 16;
-  const lines = (s.setlist || []).filter((l) => l.trim());
-  const room = Math.floor((H - y - 110) / 46);
-  let n = 0;
-  g.font = font(500, 34);
-  for (let i = 0; i < lines.length && i < room; i++) {
-    const l = lines[i];
-    if (i === room - 1 && lines.length > room) { g.fillStyle = '#b3a9cc'; g.fillText(`+ ${lines.length - i} more`, P, y); break; }
-    if (isEncoreLine(l)) { g.fillStyle = '#ff5a5f'; g.font = font(700, 30); g.fillText('ENCORE', P, y + 4); g.font = font(500, 34); }
-    else { n++; g.fillStyle = '#ff5a5f'; g.fillText(String(n).padStart(2, ' ') + '.', P, y); g.fillStyle = '#f5f0ff'; g.fillText(fit(l, 500, W - 2 * P - 80), P + 80, y); }
-    y += 46;
+  g.fillStyle = SOFT; g.font = '36px "SD Diary", cursive';
+  g.fillText(fit(handDate(s.date), W - 2 * P), P, y); y += 62;
+  g.fillStyle = INK; g.font = '104px "SD Poster", Impact, sans-serif';
+  g.fillText(fit(s.artist.toUpperCase(), W - 2 * P), P, y); y += 118;
+  g.font = '32px "SD Typewriter", monospace'; g.fillStyle = INK;
+  const where = [s.venue, s.city].filter(Boolean).join(', ').toUpperCase();
+  if (where) { g.fillText(fit(where, W - 2 * P), P, y); y += 50; }
+  if (s.rating) {
+    const star = new Path2D('M12.3 1.9l2.5 6.7 7.2.2-5.6 4.7 2 7.1-6.3-4.1-5.8 4.2 1.5-7.2L2.1 9l7.3-.5z');
+    for (let i = 0; i < 5; i++) {
+      g.save(); g.translate(P + i * 52, y + 4); g.rotate(((i % 2) ? 1 : -1) * 0.12); g.scale(2, 2);
+      if (i < s.rating) { g.fillStyle = RED; g.fill(star); } else { g.strokeStyle = 'rgba(37,35,31,.3)'; g.lineWidth = 1.2; g.stroke(star); }
+      g.restore();
+    }
+    y += 70;
   }
-  g.fillStyle = '#b3a9cc'; g.font = font(600, 30); g.fillText('♪ Setlist — my concert diary', P, H - P - 30);
+  const lines = (s.setlist || []).filter((l) => l.trim());
+  if (lines.length) {
+    y += 16;
+    g.fillStyle = INK; g.font = '52px "SD Marker", cursive'; g.fillText('SETLIST', P, y);
+    g.fillRect(P, y + 62, W - 2 * P, 4); y += 82;
+    const room = Math.max(1, Math.floor((H - y - 120) / 50));
+    let n = 0;
+    for (let i = 0; i < lines.length && i < room; i++) {
+      const l = lines[i];
+      if (i === room - 1 && lines.length > room) { g.fillStyle = SOFT; g.font = '700 36px "SD Pen", cursive'; g.fillText(`+ ${lines.length - i} more…`, P + 60, y); break; }
+      if (isEncoreLine(l)) { g.fillStyle = RED; g.font = '700 38px "SD Pen", cursive'; g.fillText('encore', P + 60, y); }
+      else { n++; g.fillStyle = SOFT; g.font = '26px "SD Typewriter", monospace'; g.fillText(String(n), P, y + 8); g.fillStyle = INK; g.font = '38px "SD Marker", cursive'; g.fillText(fit(l, W - 2 * P - 60), P + 60, y); }
+      y += 50;
+    }
+  }
+  g.save(); g.translate(W - P, H - 60); g.rotate(-0.05); g.textAlign = 'right'; g.textBaseline = 'alphabetic';
+  g.fillStyle = RED; g.font = '54px "SD Diary", cursive'; g.fillText('setlist diary', 0, 0); g.restore();
   return new Promise((r) => c.toBlob(r, 'image/png'));
 }
 
 async function viewShared(code) {
   let s;
   try { s = await decodeShare(code); } catch (e) {
-    app.innerHTML = `<div class="empty"><div class="big">🔗</div><h1>This link is broken</h1>
-      <p class="muted">It may have been cut off when it was copied. Ask for the link again.</p>
-      <a class="btn" href="#/shows">Go to My Shows</a></div>`;
+    app.innerHTML = `<div class="empty-page"><span class="tape tc"></span><p class="big-hand">this page got torn.</p>
+      <p>The link may have been cut off when it was copied. Ask for the link again.</p>
+      <a class="btn" href="#/shows">Go to my diary</a></div>`;
     return;
   }
   const show = { artist: s.a || 'Unknown artist', date: s.d || '', time: s.t || '', venue: s.ve || '', city: s.c || '',
     rating: Number(s.r) || 0, setlist: Array.isArray(s.sl) ? s.sl.map(String) : [], notes: s.n || '' };
   app.innerHTML = `
-    <div class="banner">🔗 Someone shared this show with you from their Setlist diary.</div>
-    <h1>${esc(show.artist)}</h1>
-    <div class="meta">${esc(fmtDate(show.date))}${show.time ? ' · ' + esc(fmtTime(show.time)) : ''}</div>
-    <div class="meta">${esc([show.venue, show.city].filter(Boolean).join(', '))}</div>
-    <div style="margin-top:6px;font-size:22px">${starsHtml(show.rating)}</div>
-    <section class="panel"><h2>Setlist <span class="muted small">(${songsOnly(show.setlist).length} songs)</span></h2>${songsHtml(show.setlist)}</section>
-    ${show.notes ? `<section class="panel"><h2>Their notes</h2><div class="notes">${esc(show.notes)}</div></section>` : ''}
-    <button class="btn primary block" id="saveCopy" style="margin-top:16px">I was there too: add to my diary</button>
-    <a class="btn block" href="#/shows" style="margin-top:10px">Go to My Shows</a>`;
+    <p class="shared-note"><span class="tape tc"></span>Someone tore this page out of their Setlist Diary for you.</p>
+    <article class="spread journal">
+      <div class="page">
+        <p class="entry-date">${esc(handDate(show.date))}${show.time ? ` · ${esc(fmtTime(show.time).toLowerCase())}` : ''}</p>
+        <h1 class="entry-artist worn">${esc(show.artist)}</h1>
+        ${show.venue || show.city ? `<p class="entry-venue">${esc([show.venue, show.city].filter(Boolean).join(', '))}</p>` : ''}
+        <div class="entry-rating">${starsInk(show.rating)}${show.rating ? `<span class="annot">${show.rating} out of 5</span>` : ''}</div>
+        <div class="entry-actions">
+          <button class="btn stamp-btn" id="saveCopy">I was there too: add to my diary</button>
+          <a class="btn" href="#/shows">Go to my diary</a>
+        </div>
+      </div>
+      <div class="page">
+        ${setlistHtml(show, { interactive: false })}
+        ${show.notes ? `<section class="lined-note" aria-labelledby="notes-h"><h2 id="notes-h">their notes</h2><p class="notes">${esc(show.notes)}</p></section>` : ''}
+      </div>
+    </article>`;
   $('#saveCopy').onclick = async () => {
     const id = uid();
     await dbPut('shows', { ...show, notes: '', rating: 0, id, media: [], ticket: {}, withWho: '', createdAt: Date.now(), updatedAt: Date.now() });
@@ -407,7 +652,14 @@ async function viewShared(code) {
   };
 }
 
-// ===================== Add / Edit =====================
+// ===================== Add / Edit: a notebook page =====================
+function chooseTabs(which) {
+  return `<nav class="choose" aria-label="What are you adding?">
+    <a href="#/add" class="${which === 'went' ? 'on' : ''}" ${which === 'went' ? 'aria-current="page"' : ''}>A show I went to</a>
+    <a href="#/plan" class="${which === 'plan' ? 'on' : ''}" ${which === 'plan' ? 'aria-current="page"' : ''}>A show I want to see</a>
+  </nav>`;
+}
+
 async function viewForm(id) {
   const existing = id ? await dbGet('shows', id) : null;
   if (id && !existing) { location.hash = '#/shows'; return; }
@@ -422,57 +674,61 @@ async function viewForm(id) {
   let rating = Number(s.rating) || 0;
 
   app.innerHTML = `
-    ${existing ? `<a class="back" href="#/show/${existing.id}">‹ Back</a><h1>Edit show</h1>` : `
-    <h1>Add a show</h1>
-    <div class="seg" role="tablist"><a class="on" href="#/add" aria-current="page">A show I went to</a><a href="#/plan">A show I want to see</a></div>`}
-    <form novalidate>
-      <label class="field"><span>Artist <b class="req">*</b></span>
-        <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(s.artist)}" placeholder="Who did you see?"></label>
+    ${existing ? `<a class="back" href="#/show/${esc(existing.id)}">${ink('back')} back to the page</a>` : ''}
+    <div class="form-wrap">
+    <h1 class="page-title">${existing ? 'edit this page' : 'log a show'}</h1>
+    ${existing ? '' : chooseTabs('went')}
+    <form class="notebook" novalidate>
+      <label class="field"><span class="lab">Artist <span class="req">*</span></span>
+        <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(s.artist)}" placeholder="who did you see?"></label>
       <div class="grid2">
-        <label class="field"><span>Date <b class="req">*</b></span><input name="date" type="date" required value="${esc(s.date)}"></label>
-        <label class="field"><span>Time</span><input name="time" type="time" value="${esc(s.time)}"></label>
+        <label class="field"><span class="lab">Date <span class="req">*</span></span><input name="date" type="date" required value="${esc(s.date)}"></label>
+        <label class="field"><span class="lab">Time</span><input name="time" type="time" value="${esc(s.time)}"></label>
       </div>
-      <label class="field"><span>Venue</span><input name="venue" autocapitalize="words" value="${esc(s.venue)}" placeholder="e.g. Madison Square Garden"></label>
-      <label class="field"><span>City</span><input name="city" autocapitalize="words" value="${esc(s.city)}" placeholder="e.g. New York"></label>
+      <label class="field"><span class="lab">Venue</span><input name="venue" autocapitalize="words" value="${esc(s.venue)}" placeholder="e.g. Madison Square Garden"></label>
+      <label class="field"><span class="lab">City</span><input name="city" autocapitalize="words" value="${esc(s.city)}" placeholder="e.g. New York"></label>
 
-      <div class="field"><span>Your rating</span>
-        <div class="starpick" role="radiogroup" aria-label="Rating">
-          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-star="${n}" aria-label="${n} star${n > 1 ? 's' : ''}">★</button>`).join('')}
+      <div class="field"><span class="lab" id="rate-l">Your rating</span>
+        <div class="starpick" role="group" aria-labelledby="rate-l">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-star="${n}" aria-label="${n} star${n > 1 ? 's' : ''}">${ink('star', '')}</button>`).join('')}
         </div></div>
 
-      <label class="field"><span>Setlist: one song per line</span>
-        <textarea name="setlist" rows="8" placeholder="Opening song&#10;Second song&#10;…&#10;Encore&#10;Last song">${esc((s.setlist || []).join('\n'))}</textarea>
-        <span class="muted small" style="font-weight:400;margin-top:6px">Type <b>Encore</b> on its own line to mark the encore.</span></label>
+      <label class="field"><span class="lab">Setlist <span class="opt">one song per line</span></span>
+        <textarea class="setlist-input" name="setlist" rows="8" placeholder="Opening song&#10;Second song&#10;…&#10;Encore&#10;Last song">${esc((s.setlist || []).join('\n'))}</textarea>
+        <span class="help">Type <b>Encore</b> on its own line to mark the encore.</span></label>
 
-      <div class="field"><span>Photos &amp; videos</span>
+      <div class="field"><span class="lab">Photos &amp; videos</span>
         <div class="mediagrid" id="mg"></div>
-        <label class="btn block filebtn">📷 Add photos or videos
+        <label class="btn block filebtn">${ink('plus')} Add photos or videos
           <input type="file" accept="image/*,video/*" multiple id="pickMedia"></label>
       </div>
 
-      <label class="field"><span>Who you went with</span><input name="withWho" value="${esc(s.withWho)}" placeholder="Optional. Never shared."></label>
-      <label class="field"><span>Notes</span><textarea name="notes" rows="4" placeholder="Best moment, the opener, what you'll remember…">${esc(s.notes)}</textarea></label>
+      <label class="field"><span class="lab">Who you went with</span><input name="withWho" value="${esc(s.withWho)}" placeholder="optional, never shared"></label>
+      <label class="field"><span class="lab">Notes</span><textarea class="notes-input" name="notes" rows="4" placeholder="best moment, the opener, what you'll remember…">${esc(s.notes)}</textarea></label>
 
-      <details class="box" ${t.seat || t.section || t.price || t.order || t.fileId || t.givenTo ? 'open' : ''}>
-        <summary>🎟 Ticket (optional)</summary>
-        <div class="grid2">
-          <label class="field"><span>Section</span><input name="section" value="${esc(t.section)}"></label>
-          <label class="field"><span>Row / seat</span><input name="seat" value="${esc(t.seat)}"></label>
+      <details class="envelope" ${t.seat || t.section || t.price || t.order || t.fileId || t.givenTo ? 'open' : ''}>
+        <summary>Ticket <span class="hand">optional · tuck it in here</span></summary>
+        <div class="inner">
+          <div class="grid2">
+            <label class="field"><span class="lab">Section</span><input name="section" value="${esc(t.section)}"></label>
+            <label class="field"><span class="lab">Row / seat</span><input name="seat" value="${esc(t.seat)}"></label>
+          </div>
+          <div class="grid2">
+            <label class="field"><span class="lab">Price paid ($)</span><input name="price" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(t.price)}"></label>
+            <label class="field"><span class="lab">Order #</span><input name="order" value="${esc(t.order)}"></label>
+          </div>
+          <div class="field"><span class="lab">Ticket picture or PDF</span>
+            <div id="tf" class="file-row"></div>
+            <label class="btn block filebtn"><span id="tfLabel">Attach ticket</span>
+              <input type="file" accept="image/*,application/pdf" id="pickTicket"></label></div>
+          <label class="field"><span class="lab">Ticket is for <span class="opt">if not you</span></span><input name="givenTo" value="${esc(t.givenTo)}" placeholder="e.g. Sam"></label>
+          <label class="check"><input type="checkbox" name="transferred" ${t.transferred ? 'checked' : ''}> I've transferred it to them</label>
         </div>
-        <div class="grid2">
-          <label class="field"><span>Price paid ($)</span><input name="price" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(t.price)}"></label>
-          <label class="field"><span>Order #</span><input name="order" value="${esc(t.order)}"></label>
-        </div>
-        <div class="field"><span>Ticket picture or PDF</span>
-          <div id="tf" class="muted small" style="margin-bottom:8px"></div>
-          <label class="btn block filebtn">📎 <span id="tfLabel">Attach ticket</span>
-            <input type="file" accept="image/*,application/pdf" id="pickTicket"></label></div>
-        <label class="field"><span>Ticket is for (if not you)</span><input name="givenTo" value="${esc(t.givenTo)}" placeholder="e.g. Sam"></label>
-        <label class="check"><input type="checkbox" name="transferred" ${t.transferred ? 'checked' : ''}> I've transferred it to them</label>
       </details>
 
-      <div class="savebar"><button class="btn primary block" type="submit" id="saveBtn">${existing ? 'Save changes' : 'Save show'}</button></div>
-    </form>`;
+      <div class="savebar"><button class="btn stamp-btn block" type="submit" id="saveBtn">${existing ? 'Save changes' : 'Save to diary'}</button></div>
+    </form>
+    </div>`;
 
   const form = $('form', app);
   const paintStars = () => form.querySelectorAll('[data-star]').forEach((b) => {
@@ -490,7 +746,7 @@ async function viewForm(id) {
     items.forEach((m, i) => {
       const d = document.createElement('div'); d.className = 'mi';
       const url = m.url || (m.url = blobUrl(m.blob));
-      d.innerHTML = (m.type.startsWith('video/') ? `<video src="${url}" muted playsinline preload="metadata"></video><span class="vtag">▶ Video</span>`
+      d.innerHTML = (m.type.startsWith('video/') ? `<video src="${url}" muted playsinline preload="metadata"></video><span class="vtag">▶ video</span>`
         : `<img src="${url}" alt="">`) + `<button type="button" class="x" aria-label="Remove">✕</button>`;
       d.querySelector('.x').onclick = () => { if (m.id) removed.push(m.id); items.splice(i, 1); paintMedia(); };
       mg.appendChild(d);
@@ -508,7 +764,7 @@ async function viewForm(id) {
 
   function paintTicket() {
     const cur = newTicket || (!ticketRemoved && ticketFile);
-    $('#tf', app).innerHTML = cur ? `📄 ${esc(cur.name || 'Ticket attached')} <button type="button" class="btn" style="min-height:36px;margin-left:8px" id="rmTicket">Remove</button>` : '';
+    $('#tf', app).innerHTML = cur ? `📄 ${esc(cur.name || 'Ticket attached')} <button type="button" class="btn small" id="rmTicket">Remove</button>` : '';
     $('#tfLabel', app).textContent = cur ? 'Replace ticket' : 'Attach ticket';
     const rm = $('#rmTicket', app); if (rm) rm.onclick = () => { newTicket = null; ticketRemoved = true; paintTicket(); };
   }
@@ -540,6 +796,7 @@ async function viewForm(id) {
         await dbPut('media', { id: fileId, blob, type: blob.type || newTicket.type, name: newTicket.name });
       }
       const show = {
+        ...(existing || {}), // keeps anything else saved on the show, e.g. circled favourite songs
         id: existing ? existing.id : uid(),
         artist, date, time: f.get('time') || '', venue: f.get('venue').trim(), city: f.get('city').trim(),
         withWho: f.get('withWho').trim(), rating,
@@ -561,7 +818,7 @@ async function viewForm(id) {
   };
 }
 
-// ===================== Upcoming (concerts you want to see) =====================
+// ===================== Upcoming: gig flyers =====================
 function daysUntil(iso) {
   if (!iso) return null;
   const t = new Date(); t.setHours(12, 0, 0, 0);
@@ -577,9 +834,6 @@ function countdownText(iso) {
   const m = Math.round(n / 30.4);
   return `In about ${m} months`;
 }
-function statusPill(p) {
-  return p.status === 'got' ? '<span class="pill got">🎟 Got tickets</span>' : '<span class="pill want">☆ Want to go</span>';
-}
 function safeLink(url) {
   try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch (e) { return ''; }
 }
@@ -587,6 +841,23 @@ function fmtDateTime(dt) {
   if (!dt) return '';
   const d = new Date(dt);
   return isNaN(d) ? '' : d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+const FLYER_BG = ['#EDE5D2', '#E3C98C', '#E9CDD1', '#BCD4CF', '#E7BE9E', '#C9D1BC'];
+
+function flyerHtml(p) {
+  const f = hash(p.id) % 6;
+  const d = parseDate(p.date);
+  const label = `${p.artist}, ${p.date ? shortDate(p.date) : 'date not announced'}${p.venue ? ', ' + p.venue : ''}. ${countdownText(p.date)}. ${p.status === 'got' ? 'Got tickets' : 'Want to go'}`;
+  return `<li><a class="flyer f-${f}" href="#/show/${esc(p.id)}" aria-label="${esc(label)}">
+    <span class="tape tc"></span>
+    <span class="fl-live" aria-hidden="true">Live</span>
+    <span class="fl-artist">${esc(p.artist)}</span>
+    <span class="fl-date">${d ? `<span class="m">${d.toLocaleDateString(undefined, { month: 'short' })}</span><span class="d">${d.getDate()}</span><span class="y">${d.getFullYear()}</span>`
+      : '<span class="m">Date</span><span class="d">?</span><span class="y">TBA</span>'}</span>
+    <span class="fl-meta">${esc(p.venue || '')}${p.venue && p.city ? '<br>' : ''}${esc(p.city || '')}</span>
+    <span class="fl-foot"><span class="countdown-ink">${esc(countdownText(p.date).toLowerCase())}${ink('circle', 'ring')}</span>
+      <span class="stamp" style="--stamp:${p.status === 'got' ? '#2f5e3a' : 'var(--burgundy)'}">${p.status === 'got' ? 'Got tickets' : 'Want to go'}</span></span>
+  </a></li>`;
 }
 
 async function viewUpcoming() {
@@ -596,65 +867,68 @@ async function viewUpcoming() {
     .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '').localeCompare(b.time || ''));
 
   if (!plans.length) {
-    app.innerHTML = `<div class="empty">
-      <div class="big">🗓</div>
-      <h1>No upcoming concerts</h1>
-      <p class="muted">Keep a list of shows you'd like to see, with a countdown, when tickets go on sale, and your budget.</p>
-      <a class="btn primary block" href="#/plan">＋ Add a concert you want to see</a>
-    </div>`;
+    app.innerHTML = `<h1 class="page-title">upcoming</h1>
+      <div class="empty-page"><span class="tape tl"></span><span class="tape tr"></span>
+      <p class="big-hand">no flyers on the wall yet.</p>
+      <p>Pin up the shows you'd like to see, with a countdown, when tickets go on sale, and your budget.</p>
+      <a class="btn stamp-btn block" href="#/plan">${ink('plus')} Add a concert you want to see</a></div>`;
     return;
   }
-  const card = (p) => {
-    const d = parseDate(p.date);
-    return `<li><a class="card plan" href="#/show/${p.id}">
-      <div class="datebox">${d ? `<div class="m">${d.toLocaleDateString(undefined, { month: 'short' })}</div>
-        <div class="d">${d.getDate()}</div><div class="y">${d.getFullYear()}</div>` : '<div class="d">?</div><div class="y">TBA</div>'}</div>
-      <div><div class="t">${esc(p.artist)}</div>
-        <div class="s">${esc([p.venue, p.city].filter(Boolean).join(' · ')) || '&nbsp;'}</div>
-        <div>${statusPill(p)} <span class="countdown">${countdownText(p.date)}</span></div></div>
-    </a></li>`;
-  };
   app.innerHTML = `
-    <h1>Upcoming</h1>
-    <p class="muted small">${ahead.length} concert${ahead.length === 1 ? '' : 's'} on your list</p>
-    <a class="btn primary block" href="#/plan" style="margin-bottom:8px">＋ Add a concert you want to see</a>
-    ${past.length ? `<div class="sectionlabel">Did you go?</div><ul class="list">${past.map(card).join('')}</ul>` : ''}
-    ${ahead.length ? `${past.length ? '<div class="sectionlabel">Coming up</div>' : ''}<ul class="list" style="margin-top:8px">${ahead.map(card).join('')}</ul>` : ''}`;
+    <h1 class="page-title">upcoming</h1>
+    <p class="page-sub">${ahead.length} concert${ahead.length === 1 ? '' : 's'} on your list · flyers on the bedroom wall</p>
+    <a class="btn stamp-btn block" href="#/plan" style="max-width:420px">${ink('plus')} Add a concert you want to see</a>
+    ${past.length ? `<section class="did-you-go" aria-labelledby="dyg-h"><div class="section-head"><h2 id="dyg-h">did you go?</h2><span class="aside">these dates have passed</span></div>
+      <ul class="flyer-grid">${past.map(flyerHtml).join('')}</ul></section>` : ''}
+    ${ahead.length ? `<section aria-labelledby="cu-h"><div class="section-head"><h2 id="cu-h">coming up</h2></div>
+      <ul class="flyer-grid">${ahead.map(flyerHtml).join('')}</ul></section>` : ''}`;
 }
 
 async function viewPlan(p) {
   const link = safeLink(p.link);
   const n = daysUntil(p.date);
   const onSaleFuture = p.onSale && new Date(p.onSale) > new Date();
+  const d = parseDate(p.date);
   app.innerHTML = `
-    <a class="back" href="#/upcoming">‹ Upcoming</a>
-    <h1>${esc(p.artist)}</h1>
-    <div class="countdown" style="font-size:18px">${countdownText(p.date)}</div>
-    <div class="meta">${p.date ? esc(fmtDate(p.date)) : 'Date not announced yet'}${p.time ? ' · ' + esc(fmtTime(p.time)) : ''}</div>
-    <div class="meta">${esc([p.venue, p.city].filter(Boolean).join(', '))}</div>
-    <div style="margin-top:8px">${statusPill(p)}</div>
+    <a class="back" href="#/upcoming">${ink('back')} back to upcoming</a>
+    <div class="poster-wrap">
+      <article class="gigposter" style="--pst-bg:${FLYER_BG[hash(p.id) % 6]}">
+        <span class="stamp ${p.status === 'got' ? 'got' : 'want'}">${p.status === 'got' ? 'Got tickets' : 'Want to go'}</span>
+        <span class="pst-live" aria-hidden="true">live!</span>
+        <h1 class="pst-artist worn">${esc(p.artist)}</h1>
+        <div class="pst-when">
+          ${d ? `<div><div class="pst-small">${esc(d.toLocaleDateString(undefined, { weekday: 'long' }))}</div><div class="pst-big">${esc(d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}</div></div>
+                 <div><div class="pst-small">Year</div><div class="pst-big">${d.getFullYear()}</div></div>`
+            : '<div><div class="pst-small">Date</div><div class="pst-big">TBA</div></div>'}
+          ${p.time ? `<div><div class="pst-small">Time</div><div class="pst-big">${esc(fmtTime(p.time))}</div></div>` : ''}
+        </div>
+        ${p.venue || p.city ? `<p class="pst-venue">${esc([p.venue, p.city].filter(Boolean).join(' · '))}</p>` : ''}
+        <span class="countdown-ink">${esc(countdownText(p.date).toLowerCase())}${ink('circle', 'ring')}</span>
+      </article>
 
-    ${n !== null && n < 0 ? `<div class="ask"><p>This date has passed. Did you go?</p>
-      <div class="btnrow" style="margin-top:0"><button class="btn primary" data-act="went">Yes, log it</button><button class="btn" data-act="del">No, remove it</button></div></div>`
-    : `<button class="btn primary block" data-act="went" style="margin-top:14px">✓ I went! Move it to My Shows</button>`}
+      <div>
+        ${n !== null && n < 0 ? `<div class="ask-note"><span class="tape tc"></span><p>This date has passed. Did you go?</p>
+          <div class="btnrow" style="margin-top:0"><button class="btn stamp-btn" data-act="went">Yes, log it</button><button class="btn" data-act="del">No, remove it</button></div></div>`
+        : `<button class="btn stamp-btn block" data-act="went" style="margin-top:24px">✓ I went! Move it to My Shows</button>`}
+        <div class="btnrow">
+          <a class="btn" href="#/plan/${esc(p.id)}">Edit</a>
+          ${p.date ? `<button class="btn" data-act="cal">Calendar</button>` : ''}
+        </div>
 
-    <div class="btnrow">
-      <a class="btn" href="#/plan/${p.id}">✎ Edit</a>
-      ${p.date ? '<button class="btn" data-act="cal">🗓 Calendar</button>' : '<span></span>'}
-    </div>
-
-    <section class="panel"><h2>Tickets</h2>
-      <dl class="kv">
-        <dt>Status</dt><dd>${p.status === 'got' ? 'Bought' : 'Not bought yet'}</dd>
-        ${p.onSale ? `<dt>On sale</dt><dd>${esc(fmtDateTime(p.onSale))}${onSaleFuture ? ' <span class="pill want">Soon</span>' : ''}</dd>` : ''}
-        ${p.price ? `<dt>${p.status === 'got' ? 'Paid' : 'Budget'}</dt><dd>${money(p.price)}</dd>` : ''}
-      </dl>
-      ${link ? `<a class="btn block" href="${esc(link)}" target="_blank" rel="noopener noreferrer" style="margin-top:12px">Open ticket page ↗</a>` : ''}
-      ${onSaleFuture ? '<button class="btn block" data-act="salecal" style="margin-top:10px">⏰ On-sale reminder</button>' : ''}
-    </section>
-    ${p.withWho ? `<section class="panel"><h2>Going with</h2><div>${esc(p.withWho)}</div></section>` : ''}
-    ${p.notes ? `<section class="panel"><h2>Notes</h2><div class="notes">${esc(p.notes)}</div></section>` : ''}
-    <div style="margin-top:24px"><button class="btn danger block" data-act="del">Remove from my list</button></div>`;
+        <section class="ticket-facts wallet" aria-labelledby="tk-h"><h2 id="tk-h">Tickets</h2>
+          <dl>
+            <dt>Status</dt><dd>${p.status === 'got' ? 'Bought' : 'Not bought yet'}</dd>
+            ${p.onSale ? `<dt>On sale</dt><dd>${esc(fmtDateTime(p.onSale))}${onSaleFuture ? ' (soon)' : ''}</dd>` : ''}
+            ${p.price ? `<dt>${p.status === 'got' ? 'Paid' : 'Budget'}</dt><dd>${money(p.price)}</dd>` : ''}
+          </dl>
+          ${link ? `<a class="btn block" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open ticket page ↗</a>` : ''}
+          ${onSaleFuture ? '<button class="btn block" data-act="salecal">On-sale reminder</button>' : ''}
+        </section>
+        ${p.withWho || p.notes ? `<section class="lined-note" aria-labelledby="pn-h"><span class="tape tc"></span><h2 id="pn-h">notes</h2>
+          <p class="notes">${p.withWho ? `going with ${esc(p.withWho)}${p.notes ? '\n' : ''}` : ''}${esc(p.notes || '')}</p></section>` : ''}
+        <div class="danger-zone"><button class="link-red" data-act="del">Remove from my list</button></div>
+      </div>
+    </div>`;
 
   app.onclick = async (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
@@ -714,33 +988,35 @@ async function viewPlanForm(id) {
   if (id && (!existing || !isPlan(existing))) { location.hash = '#/upcoming'; return; }
   const p = existing || { artist: '', date: '', time: '', venue: '', city: '', status: 'want', onSale: '', price: '', link: '', withWho: '', notes: '' };
   app.innerHTML = `
-    ${existing ? `<a class="back" href="#/show/${existing.id}">‹ Back</a><h1>Edit concert</h1>` : `
-    <h1>Add a show</h1>
-    <div class="seg" role="tablist"><a href="#/add">A show I went to</a><a class="on" href="#/plan" aria-current="page">A show I want to see</a></div>`}
-    <form novalidate>
-      <label class="field"><span>Artist <b class="req">*</b></span>
-        <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(p.artist)}" placeholder="Who do you want to see?"></label>
+    ${existing ? `<a class="back" href="#/show/${esc(existing.id)}">${ink('back')} back to the flyer</a>` : ''}
+    <div class="form-wrap">
+    <h1 class="page-title">${existing ? 'edit this flyer' : 'log a show'}</h1>
+    ${existing ? '' : chooseTabs('plan')}
+    <form class="notebook" novalidate>
+      <label class="field"><span class="lab">Artist <span class="req">*</span></span>
+        <input name="artist" required autocomplete="off" autocapitalize="words" value="${esc(p.artist)}" placeholder="who do you want to see?"></label>
       <div class="grid2">
-        <label class="field"><span>Date</span><input name="date" type="date" value="${esc(p.date)}"></label>
-        <label class="field"><span>Time</span><input name="time" type="time" value="${esc(p.time)}"></label>
+        <label class="field"><span class="lab">Date</span><input name="date" type="date" value="${esc(p.date)}"></label>
+        <label class="field"><span class="lab">Time</span><input name="time" type="time" value="${esc(p.time)}"></label>
       </div>
-      <p class="muted small" style="margin:-6px 0 14px">No date yet? Leave it blank. It'll show as "Date not announced".</p>
-      <label class="field"><span>Venue</span><input name="venue" autocapitalize="words" value="${esc(p.venue)}"></label>
-      <label class="field"><span>City</span><input name="city" autocapitalize="words" value="${esc(p.city)}"></label>
+      <p class="help field" style="margin-top:-12px;font-family:var(--font-pen);font-size:18px;color:var(--text-soft)">No date yet? Leave it blank. It'll show as "Date not announced".</p>
+      <label class="field"><span class="lab">Venue</span><input name="venue" autocapitalize="words" value="${esc(p.venue)}"></label>
+      <label class="field"><span class="lab">City</span><input name="city" autocapitalize="words" value="${esc(p.city)}"></label>
 
-      <div class="field"><span>Tickets</span>
-        <div class="seg" style="margin:0">
-          <label><input type="radio" name="status" value="want" ${p.status !== 'got' ? 'checked' : ''}>☆ Want to go</label>
-          <label><input type="radio" name="status" value="got" ${p.status === 'got' ? 'checked' : ''}>🎟 Got tickets</label>
-        </div></div>
-      <label class="field"><span>Tickets go on sale</span><input name="onSale" type="datetime-local" value="${esc(p.onSale)}"></label>
-      <label class="field"><span id="priceLabel">${p.status === 'got' ? 'Price paid ($)' : 'Budget ($)'}</span>
+      <fieldset class="field" style="border:0;padding:0;margin:0 0 22px"><legend class="lab" style="padding:0;font-family:var(--font-pen);font-weight:700;font-size:22px;margin-bottom:8px">Tickets</legend>
+        <div class="seg">
+          <label><input type="radio" name="status" value="want" ${p.status !== 'got' ? 'checked' : ''}>Want to go</label>
+          <label><input type="radio" name="status" value="got" ${p.status === 'got' ? 'checked' : ''}>Got tickets</label>
+        </div></fieldset>
+      <label class="field"><span class="lab">Tickets go on sale</span><input name="onSale" type="datetime-local" value="${esc(p.onSale)}"></label>
+      <label class="field"><span class="lab" id="priceLabel">${p.status === 'got' ? 'Price paid ($)' : 'Budget ($)'}</span>
         <input name="price" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(p.price)}"></label>
-      <label class="field"><span>Ticket page link</span><input name="link" type="url" inputmode="url" value="${esc(p.link)}" placeholder="https://…"></label>
-      <label class="field"><span>Going with</span><input name="withWho" value="${esc(p.withWho)}" placeholder="Optional"></label>
-      <label class="field"><span>Notes</span><textarea name="notes" rows="3" placeholder="Presale code reminder, who to text, songs you hope they play…">${esc(p.notes)}</textarea></label>
-      <div class="savebar"><button class="btn primary block" type="submit">${existing ? 'Save changes' : 'Add to Upcoming'}</button></div>
-    </form>`;
+      <label class="field"><span class="lab">Ticket page link</span><input name="link" type="url" inputmode="url" value="${esc(p.link)}" placeholder="https://…"></label>
+      <label class="field"><span class="lab">Going with</span><input name="withWho" value="${esc(p.withWho)}" placeholder="optional"></label>
+      <label class="field"><span class="lab">Notes</span><textarea class="notes-input" name="notes" rows="3" placeholder="presale code reminder, who to text, songs you hope they play…">${esc(p.notes)}</textarea></label>
+      <div class="savebar"><button class="btn stamp-btn block" type="submit">${existing ? 'Save changes' : 'Pin it to Upcoming'}</button></div>
+    </form>
+    </div>`;
   const form = $('form', app);
   form.addEventListener('change', (e) => {
     if (e.target.name === 'status') $('#priceLabel').textContent = e.target.value === 'got' ? 'Price paid ($)' : 'Budget ($)';
@@ -767,7 +1043,7 @@ async function viewPlanForm(id) {
   };
 }
 
-// ===================== Stats =====================
+// ===================== Stats: the numbers =====================
 async function viewStats() {
   const shows = await attendedShows();
   const yearNow = new Date().getFullYear();
@@ -786,29 +1062,35 @@ async function viewStats() {
   const songs = count(shows.flatMap((s) => [...new Set(songsOnly(s.setlist).map((x) => x.toLowerCase()))].map((k) => [k, songsOnly(s.setlist).find((x) => x.toLowerCase() === k)])));
 
   app.innerHTML = `
-    <h1>Your stats</h1>
-    ${!shows.length ? `<p class="muted">Add a show and your stats will appear here.</p><a class="btn primary block" href="#/add">＋ Add a show</a>` : `
-    <div class="tiles">
-      <div class="tile"><div class="n">${shows.length}</div><div class="l">shows total</div></div>
-      <div class="tile"><div class="n">${thisYear}</div><div class="l">shows in ${yearNow}</div></div>
-      <div class="tile"><div class="n">${avg ? avg.toFixed(1) + '★' : '—'}</div><div class="l">average rating</div></div>
-      <div class="tile"><div class="n">${money(spend)}</div><div class="l">spent on tickets</div></div>
+    <h1 class="page-title">the numbers</h1>
+    <p class="page-sub">tallied up in the back of the diary</p>
+    ${!shows.length ? `<div class="empty-page"><span class="tape tc"></span><p class="big-hand">no tally marks yet.</p>
+      <p>Log a show and your numbers will start adding up here.</p><a class="btn stamp-btn block" href="#/add">${ink('plus')} Log a show</a></div>` : `
+    <div class="tally">
+      <div><div class="n">${shows.length}</div><div class="l">shows total</div></div>
+      <div><div class="n">${thisYear}</div><div class="l">shows in ${yearNow}</div></div>
+      <div><div class="n">${avg ? avg.toFixed(1) + '★' : '—'}</div><div class="l">average rating</div></div>
+      <div><div class="n money">${money(spend)}</div><div class="l">spent on tickets</div></div>
     </div>
-    <section class="panel"><h2>Shows per year</h2><div class="bars">
-      ${years.map((y) => `<div class="bar"><span>${y}</span><div class="track"><div class="fill" style="width:${(byYear[y] / maxY) * 100}%"></div></div><span class="v">${byYear[y]}</span></div>`).join('')}
-    </div></section>
-    <section class="panel"><h2>Most-seen artists</h2><ol class="toplist">
-      ${artists.slice(0, 5).map((a) => `<li>${esc(a.label)} <span class="c">· ${a.n} show${a.n > 1 ? 's' : ''}</span></li>`).join('')}
-    </ol></section>
-    <section class="panel"><h2>Songs you've heard live most</h2>
-      ${songs.length ? `<ol class="toplist">${songs.slice(0, 10).map((x) => `<li>${esc(x.label)} <span class="c">· ${x.n}×</span></li>`).join('')}</ol>`
-        : '<p class="muted">Add setlists to see your most-heard songs.</p>'}
-    </section>`}
-    <section class="panel"><h2>Your data</h2>
-      <p class="muted small">Your diary is stored only on this phone. Back it up now and then, so you don't lose it if you change phones or clear your browser.</p>
+    <section class="chart-sheet" aria-labelledby="py-h"><span class="tape tl"></span><span class="tape tr"></span>
+      <h2 id="py-h">shows per year</h2>
+      <div class="bars">
+      ${years.map((y) => `<div class="bar"><span class="yr">${y}</span><div class="track"><div class="fill" style="width:${(byYear[y] / maxY) * 100}%"></div></div><span class="v">${byYear[y]}</span></div>`).join('')}
+      </div></section>
+    <div class="stats-cols">
+      <section class="clip rotl" aria-labelledby="ar-h"><h2 id="ar-h">most-seen artists</h2><ol class="rank">
+        ${artists.slice(0, 5).map((a) => `<li><span class="nm">${esc(a.label)}</span><span class="ct">${a.n} show${a.n > 1 ? 's' : ''}</span></li>`).join('')}
+      </ol></section>
+      <section class="clip rotr" aria-labelledby="so-h"><h2 id="so-h">songs you've heard live most</h2>
+        ${songs.length ? `<ol class="rank songs">${songs.slice(0, 10).map((x) => `<li><span class="nm">${esc(x.label)}</span><span class="ct">${x.n}×</span></li>`).join('')}</ol>`
+          : '<p class="sl-empty">Add setlists to see your most-heard songs.</p>'}
+      </section>
+    </div>`}
+    <section class="housekeeping" aria-labelledby="hk-h"><h2 id="hk-h">Your data</h2>
+      <p>Your diary is stored only on this phone. Back it up now and then, so you don't lose it if you change phones or clear your browser.</p>
       <div class="btnrow">
-        <button class="btn" id="backup">⬇ Back up</button>
-        <label class="btn filebtn">⬆ Restore<input type="file" accept="application/json,.json" id="restore"></label>
+        <button class="btn" id="backup">Back up</button>
+        <label class="btn filebtn">Restore<input type="file" accept="application/json,.json" id="restore"></label>
       </div>
     </section>`;
 
