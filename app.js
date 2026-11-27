@@ -157,7 +157,7 @@ function ticketHtml(s, o = {}) {
   const isLink = o.link !== false;
   const tag = isLink ? 'a' : 'div';
   const label = `${s.artist}, ${shortDate(s.date)}${s.venue ? ', ' + s.venue : ''}${s.city ? ', ' + s.city : ''}${s.rating ? `, rated ${s.rating} of 5` : ''}`;
-  const attrs = isLink ? ` href="#/show/${esc(s.id)}" aria-label="${esc(label)}"` : '';
+  const attrs = isLink ? ` href="${o.href || '#/show/' + esc(s.id)}" aria-label="${esc(label)}"` : '';
   return `<${tag} class="tix v-${v.k}"${attrs} style="--tilt:${tilt}deg">
     <div class="tix-shape">
       <div class="tix-main">
@@ -224,9 +224,10 @@ async function route() {
   const h = location.hash || '#/shows';
   window.scrollTo(0, 0);
   const [, view, id] = h.split('/');
-  document.body.dataset.view = h.startsWith('#share=') ? 'shared' : h.startsWith('#xfer=') ? 'xfer' : (!view || view === 'shows') ? 'home' : view;
+  document.body.dataset.view = h.startsWith('#share=') || h.startsWith('#diary=') ? 'shared' : h.startsWith('#xfer=') ? 'xfer' : (!view || view === 'shows') ? 'home' : view;
   try {
     if (h.startsWith('#share=')) { setTab(''); return await viewShared(h.slice(7)); }
+    if (h.startsWith('#diary=')) { setTab(''); return await viewSharedDiary(h.slice(7)); }
     if (h.startsWith('#xfer=')) { setTab(''); return await viewXfer(h.slice(6)); }
     if (view === 'add') { setTab('add'); return await viewForm(null); }
     if (view === 'plan') { setTab(id ? '' : 'add'); return await viewPlanForm(id || null); }
@@ -320,7 +321,7 @@ async function viewList() {
         <a class="btn block" href="#/plan">Add a show you want to see</a></div></section>`}
     </div>
 
-    <div class="log-cta"><a class="btn stamp-btn" href="#/add">${ink('plus')} Log a show</a><span class="annot" aria-hidden="true">${ink('arrow')} got a new stub?</span></div>
+    <div class="log-cta"><a class="btn stamp-btn" href="#/add">${ink('plus')} Log a show</a><button class="btn" id="shareDiary">Share my diary</button></div>
 
     <section aria-labelledby="coll-h">
       <div class="section-head"><h2 id="coll-h">the collection</h2><span class="aside">${shows.length} stub${shows.length === 1 ? '' : 's'} &amp; counting</span></div>
@@ -377,6 +378,7 @@ async function viewList() {
         <span class="cl-stars">${s.rating ? starsInk(s.rating) : ''}</span></a></li>`; }).join('')}</ul>`;
     return `<ul class="ticket-grid">${items.map((s) => `<li>${ticketHtml(s, { num: numOf.get(s.id) })}</li>`).join('')}</ul>`;
   }
+  $('#shareDiary').onclick = () => openDiaryShareDialog();
   $('.search', app).addEventListener('input', render);
   sel.addEventListener('change', () => { sort = sel.value; store.set('sd-sort', sort); render(); });
   $('.viewtabs', app).addEventListener('click', (e) => {
@@ -626,8 +628,14 @@ async function viewShared(code) {
   }
   const show = { artist: s.a || 'Unknown artist', date: s.d || '', time: s.t || '', venue: s.ve || '', city: s.c || '',
     rating: Number(s.r) || 0, setlist: Array.isArray(s.sl) ? s.sl.map(String) : [], notes: s.n || '' };
+  sharedShowPage(show, { note: 'Someone tore this page out of their Setlist Diary for you.' });
+}
+
+// A read-only diary page someone shared (one show, or one show from a shared diary).
+function sharedShowPage(show, o = {}) {
   app.innerHTML = `
-    <p class="shared-note"><span class="tape tc"></span>Someone tore this page out of their Setlist Diary for you.</p>
+    ${o.backHref ? `<a class="back" href="${o.backHref}">${ink('back')} ${esc(o.backLabel || 'back')}</a>` : ''}
+    <p class="shared-note"><span class="tape tc"></span>${esc(o.note)}</p>
     <article class="spread journal">
       <div class="page">
         <p class="entry-date">${esc(handDate(show.date))}${show.time ? ` · ${esc(fmtTime(show.time).toLowerCase())}` : ''}</p>
@@ -636,7 +644,7 @@ async function viewShared(code) {
         <div class="entry-rating">${starsInk(show.rating)}${show.rating ? `<span class="annot">${show.rating} out of 5</span>` : ''}</div>
         <div class="entry-actions">
           <button class="btn stamp-btn" id="saveCopy">I was there too: add to my diary</button>
-          <a class="btn" href="#/shows">Go to my diary</a>
+          <a class="btn" href="${o.backHref || '#/shows'}">${o.backHref ? 'Back to their diary' : 'Go to my diary'}</a>
         </div>
       </div>
       <div class="page">
@@ -646,11 +654,132 @@ async function viewShared(code) {
     </article>`;
   $('#saveCopy').onclick = async () => {
     const id = uid();
-    await dbPut('shows', { ...show, notes: '', rating: 0, id, media: [], ticket: {}, withWho: '', createdAt: Date.now(), updatedAt: Date.now() });
+    await dbPut('shows', { artist: show.artist, date: show.date, time: show.time, venue: show.venue, city: show.city, setlist: show.setlist,
+      notes: '', rating: 0, id, media: [], ticket: {}, withWho: '', createdAt: Date.now(), updatedAt: Date.now() });
     askPersist();
     toast('Added. Now add your own rating and photos.');
     location.hash = '#/edit/' + id;
   };
+}
+
+// ===================== Share my whole diary (one link, no server) =====================
+// The diary's words are packed into the link itself, like a single-show link.
+// Never included: photos, videos, ticket files, seats, prices, order numbers, who you went with.
+async function openDiaryShareDialog() {
+  const all = await dbAll('shows');
+  const shows = all.filter((s) => !isPlan(s)).sort(byDateDesc);
+  const plans = all.filter(isPlan);
+  if (!shows.length) { toast('Log a show first, then share your diary.'); return; }
+  const years = [...new Set(shows.map((s) => (s.date || '').slice(0, 4)).filter(Boolean))];
+  const dlg = document.createElement('dialog');
+  dlg.setAttribute('aria-labelledby', 'sd-h');
+  dlg.innerHTML = `<span class="tape tc"></span>
+    <h2 id="sd-h">share my diary</h2>
+    <p class="sub">One link to your whole ticket collection. They can look, not change anything.</p>
+    <label class="field"><span class="lab">Sign it as <span class="opt">optional</span></span>
+      <input name="by" maxlength="40" value="${esc(store.get('sd-by', ''))}" placeholder="e.g. Ariel"></label>
+    <label class="field"><span class="lab">Which shows</span>
+      <select name="which"><option value="all">All ${shows.length} shows</option>${years.map((y) => `<option value="${y}">Just ${y}</option>`).join('')}</select></label>
+    <label class="check"><input type="checkbox" name="notes"> Include my notes</label>
+    ${plans.length ? '<label class="check"><input type="checkbox" name="plans"> Include my upcoming list</label>' : ''}
+    <p class="qr-note">Never included: photos, videos, ticket files, seats, prices or who you went with. Anyone you send the link to can pass it on.</p>
+    <p class="qr-part" aria-live="polite"></p>
+    <button class="btn stamp-btn block" data-act="go">Share the link</button>
+    <button class="link-red" data-act="close" style="width:100%">cancel</button>`;
+  document.body.appendChild(dlg);
+  const val = (n) => dlg.querySelector(`[name=${n}]`);
+  async function build() {
+    const which = val('which').value, by = val('by').value.trim(), notes = val('notes').checked;
+    const pick = shows.filter((s) => which === 'all' || (s.date || '').startsWith(which));
+    const payload = { v: 1, k: 'diary', by,
+      s: pick.map((s) => [s.id, s.artist, s.date || '', s.time || '', s.venue || '', s.city || '', Number(s.rating) || 0, s.setlist || [], notes ? (s.notes || '') : '', s.favs || []]) };
+    if (val('plans')?.checked) payload.u = plans.map((p) => [p.id, p.artist, p.date || '', p.venue || '', p.city || '', p.status === 'got' ? 'got' : 'want']);
+    return { url: location.origin + location.pathname + '#diary=' + (await encodeShare(payload)), n: pick.length, by };
+  }
+  const sizeNote = async () => {
+    const { url, n } = await build();
+    const len = url.length;
+    $('.qr-part', dlg).textContent = `${n} show${n === 1 ? '' : 's'} · ${len.toLocaleString()} character link${len > 8000 ? ' (long; if it gets cut off, share one year at a time)' : ''}`;
+  };
+  dlg.addEventListener('input', sizeNote); dlg.addEventListener('change', sizeNote);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') return dlg.close();
+    if (act !== 'go') return;
+    const { url, n, by } = await build();
+    store.set('sd-by', by);
+    dlg.close();
+    const title = by ? `${by}'s concert diary` : 'My concert diary';
+    if (navigator.share) {
+      try { await navigator.share({ title, text: `${title}: ${n} show${n === 1 ? '' : 's'}`, url }); return; }
+      catch (err) { if (err.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast('Link copied. Paste it anywhere.'); }
+    catch (err) { prompt('Copy this link:', url); }
+  });
+  dlg.showModal();
+  sizeNote();
+}
+
+async function viewSharedDiary(raw) {
+  const [code, pick] = raw.split('~');
+  let d;
+  try { d = await decodeShare(code); if (d.k !== 'diary' || !Array.isArray(d.s)) throw new Error('bad'); }
+  catch (e) {
+    app.innerHTML = `<div class="empty-page"><span class="tape tc"></span><p class="big-hand">this diary got torn.</p>
+      <p>The link may have been cut off when it was copied. Ask for the link again.</p><a class="btn" href="#/shows">Go to my diary</a></div>`;
+    return;
+  }
+  const str = (x) => String(x ?? '');
+  const shows = d.s.map((r) => ({ id: str(r[0]) || uid(), artist: str(r[1]) || 'Unknown artist', date: str(r[2]), time: str(r[3]), venue: str(r[4]), city: str(r[5]),
+    rating: Math.min(5, Math.max(0, Number(r[6]) || 0)), setlist: Array.isArray(r[7]) ? r[7].map(str) : [], notes: str(r[8]), favs: Array.isArray(r[9]) ? r[9].map(str) : [] }))
+    .sort(byDateDesc);
+  const plans = (Array.isArray(d.u) ? d.u : []).map((r) => ({ id: str(r[0]), artist: str(r[1]) || 'Unknown artist', date: str(r[2]), venue: str(r[3]), city: str(r[4]), status: r[5] === 'got' ? 'got' : 'want' }))
+    .filter((p) => !p.date || daysUntil(p.date) >= 0).sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+  const by = str(d.by).slice(0, 40);
+  const whose = by ? `${by}'s` : 'Someone’s';
+  const base = '#diary=' + code;
+
+  if (pick !== undefined) {
+    const s = shows[Number(pick)];
+    if (!s) { location.hash = base; return; }
+    sharedShowPage(s, { note: `A page from ${whose} concert diary.`, backHref: base, backLabel: `back to ${by ? by + '’s' : 'their'} diary` });
+    return;
+  }
+  const order = new Map(shows.map((s, i) => [s, i]));
+  const numOf = new Map([...shows].reverse().map((s, i) => [s.id, i + 1]));
+  const rated = shows.filter((s) => s.rating);
+  const avg = rated.length ? rated.reduce((a, s) => a + s.rating, 0) / rated.length : 0;
+  app.innerHTML = `
+    <p class="shared-note"><span class="tape tc"></span>${esc(whose)} whole Setlist Diary, shared with you. Have a look around. Nothing here can be changed.</p>
+    <section class="hero"><div>
+      <h1 class="wordmark">${esc(by ? `${by}'s diary` : 'a concert diary')}${ink('under', 'u')}</h1>
+      <p class="hero-sub">a little record of the nights worth remembering</p></div></section>
+    <p class="hero-stats"><span><b>${shows.length}</b> show${shows.length === 1 ? '' : 's'}</span>
+      ${avg ? `<span>·</span><span>avg <b>${avg.toFixed(1)}</b> ★</span>` : ''}</p>
+    ${plans.length ? `<section aria-labelledby="su-h"><div class="section-head"><h2 id="su-h">coming up</h2><span class="aside">shows on their list</span></div>
+      <ul class="flyer-grid">${plans.map((p) => flyerHtml(p, { link: false })).join('')}</ul></section>` : ''}
+    <section aria-labelledby="sc-h">
+      <div class="section-head"><h2 id="sc-h">the collection</h2><span class="aside">tap a stub for the setlist</span></div>
+      <div class="archive-tools"><div class="search-wrap">${ink('note')}<input class="search" type="search" placeholder="search artist, venue, city or song" aria-label="Search their shows"></div></div>
+      <div id="archive"></div>
+      <p class="no-match" hidden>nothing in this diary matches that…</p>
+    </section>
+    <div class="log-cta"><a class="btn" href="#/shows">Go to my own diary</a></div>`;
+  const box = $('#archive', app);
+  const render = () => {
+    const q = $('.search', app).value.trim().toLowerCase();
+    const list = shows.filter((s) => !q || [s.artist, s.venue, s.city, ...s.setlist].join(' ').toLowerCase().includes(q));
+    $('.no-match', app).hidden = list.length > 0;
+    const groups = [];
+    for (const s of list) { const y = s.date.slice(0, 4) || 'undated'; if (!groups.length || groups[groups.length - 1].y !== y) groups.push({ y, items: [] }); groups[groups.length - 1].items.push(s); }
+    box.innerHTML = groups.map((g) => `<section class="year-group" aria-label="${esc(g.y)}">
+      <div class="year-head"><h3>${esc(g.y)}${ink('under', 'u')}</h3><span class="count">${g.items.length} show${g.items.length === 1 ? '' : 's'}</span></div>
+      <ul class="ticket-grid">${g.items.map((s) => `<li>${ticketHtml(s, { num: numOf.get(s.id), href: `${base}~${order.get(s)}` })}</li>`).join('')}</ul></section>`).join('');
+  };
+  $('.search', app).addEventListener('input', render);
+  render();
 }
 
 // ===================== Add / Edit: a notebook page =====================
@@ -845,11 +974,12 @@ function fmtDateTime(dt) {
 }
 const FLYER_BG = ['#EDE5D2', '#E3C98C', '#E9CDD1', '#BCD4CF', '#E7BE9E', '#C9D1BC'];
 
-function flyerHtml(p) {
+function flyerHtml(p, o = {}) {
   const f = hash(p.id) % 6;
   const d = parseDate(p.date);
   const label = `${p.artist}, ${p.date ? shortDate(p.date) : 'date not announced'}${p.venue ? ', ' + p.venue : ''}. ${countdownText(p.date)}. ${p.status === 'got' ? 'Got tickets' : 'Want to go'}`;
-  return `<li><a class="flyer f-${f}" href="#/show/${esc(p.id)}" aria-label="${esc(label)}">
+  const tag = o.link === false ? 'div' : 'a';
+  return `<li><${tag} class="flyer f-${f}" ${o.link === false ? `role="group"` : `href="#/show/${esc(p.id)}"`} aria-label="${esc(label)}">
     <span class="tape tc"></span>
     <span class="fl-live" aria-hidden="true">Live</span>
     <span class="fl-artist">${esc(p.artist)}</span>
@@ -858,7 +988,7 @@ function flyerHtml(p) {
     <span class="fl-meta">${esc(p.venue || '')}${p.venue && p.city ? '<br>' : ''}${esc(p.city || '')}</span>
     <span class="fl-foot"><span class="countdown-ink">${esc(countdownText(p.date).toLowerCase())}${ink('circle', 'ring')}</span>
       <span class="stamp" style="--stamp:${p.status === 'got' ? '#2f5e3a' : 'var(--burgundy)'}">${p.status === 'got' ? 'Got tickets' : 'Want to go'}</span></span>
-  </a></li>`;
+  </${tag}></li>`;
 }
 
 async function viewUpcoming() {

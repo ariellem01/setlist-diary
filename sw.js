@@ -4,7 +4,7 @@
 // IMPORTANT: bump the CACHE name below every time you republish, so phones pick up the new version.
 // It never sends your diary anywhere — it only stores the app's own files.
 
-const CACHE = "setlist-v4"; // change this name (v2, v3…) each time you republish
+const CACHE = "setlist-v5"; // change this name (v2, v3…) each time you republish
 
 // Files saved on first visit. Missing ones are skipped, so this is safe to keep as-is.
 const FONTS = ["nothing-you-could-do-latin-400-normal", "caveat-latin-500-normal", "caveat-latin-700-normal",

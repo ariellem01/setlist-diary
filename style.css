@@ -129,7 +129,7 @@ h1, h2, h3 { margin: 0; font-weight: 400; }
 .page-title { font-family: var(--font-diary); font-size: var(--fs-title); line-height: 1.05; transform: rotate(-1.2deg); transform-origin: left; margin: var(--s-3) 0 var(--s-2); }
 .page-sub { font-family: var(--font-pen); font-size: var(--fs-hand); color: var(--text-soft); margin: 0 0 var(--s-5); transform: rotate(-.6deg); }
 .label-hand { font-family: var(--font-pen); font-weight: 700; font-size: var(--fs-hand); line-height: 1.1; }
-.section-head { display: flex; align-items: baseline; gap: var(--s-3); margin: var(--s-7) 0 var(--s-4); }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s-3); margin: var(--s-7) 0 var(--s-4); }
 .section-head h2 { font-family: var(--font-diary); font-size: clamp(32px, 8vw, 44px); line-height: 1; position: relative; }
 .section-head .aside { font-family: var(--font-pen); font-size: var(--fs-hand-sm); color: var(--text-soft); }
 
